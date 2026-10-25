@@ -21,6 +21,8 @@ export interface Cell {
   outline?: string;
   /** Which bunny ear a cell belongs to. */
   earId?: number;
+  /** Row inside a bunny ear, counted from the tip (0) to the head. */
+  earRow?: number;
 }
 
 export type Wall =
@@ -111,6 +113,12 @@ export interface FloorConfig {
   rings: number;
   braid: number;
   orbAtCenter: boolean;
+  /**
+   * Number of sectors in every ring. Keeping this constant (instead of growing
+   * it ring by ring) is what lets hand-drawn mazes carry long radial walls and
+   * long concentric arcs all the way through the floor.
+   */
+  sectors?: number;
   seed: string;
   /** Number of optional/required coins in the maze. */
   coinCount?: number;

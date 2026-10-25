@@ -1,6 +1,6 @@
 import { useId, useMemo } from "react";
 import type { Character } from "../content/characters";
-import type { Cell, Level } from "../generator/types";
+import type { Cell, Edge, Level, Wall } from "../generator/types";
 import { CAPSULE_RADIUS, openNeighborIds, PORTAL_OFFSET } from "../generator/generate";
 import { AvatarGlyph } from "./CharacterAvatar";
 import { DragonCarrotGlyph } from "./DragonCarrot";
@@ -21,6 +21,137 @@ function arcPath(radius: number, a0: number, a1: number): string {
   const [x1, y1] = pointAt(radius, a1);
   const largeArc = a1 - a0 > Math.PI ? 1 : 0;
   return `M ${x0.toFixed(4)} ${y0.toFixed(4)} A ${radius} ${radius} 0 ${largeArc} 1 ${x1.toFixed(4)} ${y1.toFixed(4)}`;
+}
+
+const MERGE_EPS = 1e-6;
+
+interface Interval {
+  start: number;
+  end: number;
+}
+
+function mergeIntervals(intervals: Interval[]): Interval[] {
+  if (intervals.length === 0) return [];
+  const sorted = [...intervals].sort((a, b) => a.start - b.start);
+  const merged: Interval[] = [{ ...sorted[0] }];
+  for (const interval of sorted.slice(1)) {
+    const current = merged[merged.length - 1];
+    if (interval.start <= current.end + MERGE_EPS) {
+      current.end = Math.max(current.end, interval.end);
+    } else {
+      merged.push({ ...interval });
+    }
+  }
+  return merged;
+}
+
+function normalizeAngle(angle: number): number {
+  const wrapped = ((angle % TWO_PI) + TWO_PI) % TWO_PI;
+  return wrapped > TWO_PI - MERGE_EPS ? 0 : wrapped;
+}
+
+/**
+ * Hand-drawn mazes use long continuous walls. A cell-edge renderer produces
+ * hundreds of tiny segments, so combine touching collinear edges into one
+ * path before drawing. Gameplay still uses the original edge graph.
+ */
+function mergeWallPaths(edges: Edge[], ear: boolean): string[] {
+  const arcs = new Map<number, Interval[]>();
+  const radials = new Map<string, { angle: number; intervals: Interval[] }>();
+  const straights = new Map<string, { axis: "h" | "v"; coord: number; intervals: Interval[] }>();
+  const loose: Wall[] = [];
+
+  for (const edge of edges) {
+    if (edge.open || edge.wall.type === "none") continue;
+    if ((edge.kind === "ear") !== ear) continue;
+    const wall = edge.wall;
+
+    if (wall.type === "arc") {
+      const intervals = arcs.get(wall.radius) ?? [];
+      intervals.push({ start: wall.a0, end: wall.a1 });
+      arcs.set(wall.radius, intervals);
+      continue;
+    }
+
+    if (wall.type === "line") {
+      const angle1 = Math.atan2(wall.y1, wall.x1);
+      const angle2 = Math.atan2(wall.y2, wall.x2);
+      const r1 = Math.hypot(wall.x1, wall.y1);
+      const r2 = Math.hypot(wall.x2, wall.y2);
+      const sameRay =
+        r1 > MERGE_EPS &&
+        r2 > MERGE_EPS &&
+        Math.abs(Math.sin(angle1 - angle2)) < MERGE_EPS &&
+        Math.cos(angle1 - angle2) > 0;
+
+      if (sameRay) {
+        const angle = normalizeAngle(angle1);
+        const key = angle.toFixed(6);
+        const group = radials.get(key) ?? { angle, intervals: [] };
+        group.intervals.push({
+          start: Math.min(r1, r2),
+          end: Math.max(r1, r2),
+        });
+        radials.set(key, group);
+      } else if (Math.abs(wall.y1 - wall.y2) < MERGE_EPS) {
+        const coord = wall.y1;
+        const key = `h:${coord.toFixed(6)}`;
+        const group = straights.get(key) ?? { axis: "h" as const, coord, intervals: [] };
+        group.intervals.push({
+          start: Math.min(wall.x1, wall.x2),
+          end: Math.max(wall.x1, wall.x2),
+        });
+        straights.set(key, group);
+      } else if (Math.abs(wall.x1 - wall.x2) < MERGE_EPS) {
+        const coord = wall.x1;
+        const key = `v:${coord.toFixed(6)}`;
+        const group = straights.get(key) ?? { axis: "v" as const, coord, intervals: [] };
+        group.intervals.push({
+          start: Math.min(wall.y1, wall.y2),
+          end: Math.max(wall.y1, wall.y2),
+        });
+        straights.set(key, group);
+      } else {
+        loose.push(wall);
+      }
+      continue;
+    }
+
+    loose.push(wall);
+  }
+
+  const paths: string[] = [];
+  for (const [radius, intervals] of arcs) {
+    for (const interval of mergeIntervals(intervals)) {
+      paths.push(arcPath(radius, interval.start, interval.end));
+    }
+  }
+  for (const group of radials.values()) {
+    for (const interval of mergeIntervals(group.intervals)) {
+      const [x1, y1] = pointAt(interval.start, group.angle);
+      const [x2, y2] = pointAt(interval.end, group.angle);
+      paths.push(
+        `M ${x1.toFixed(4)} ${y1.toFixed(4)} L ${x2.toFixed(4)} ${y2.toFixed(4)}`,
+      );
+    }
+  }
+  for (const group of straights.values()) {
+    for (const interval of mergeIntervals(group.intervals)) {
+      if (group.axis === "h") {
+        paths.push(
+          `M ${interval.start.toFixed(4)} ${group.coord.toFixed(4)} L ${interval.end.toFixed(4)} ${group.coord.toFixed(4)}`,
+        );
+      } else {
+        paths.push(
+          `M ${group.coord.toFixed(4)} ${interval.start.toFixed(4)} L ${group.coord.toFixed(4)} ${interval.end.toFixed(4)}`,
+        );
+      }
+    }
+  }
+  for (const wall of loose) {
+    if (wall.type === "path") paths.push(wall.d);
+  }
+  return paths;
 }
 
 function cellPath(cell: Cell): string {
@@ -127,23 +258,13 @@ export function Maze({
   const bottomPad = R + pad;
   const viewBox = `${-(R + pad)} ${-topPad} ${(R + pad) * 2} ${topPad + bottomPad}`;
 
-  const wallPaths = useMemo(() => {
-    const earWalls: string[] = [];
-    const headWalls: string[] = [];
-    for (const edge of level.edges) {
-      if (edge.open || edge.wall.type === "none") continue;
-      let d = "";
-      if (edge.wall.type === "line") {
-        d = `M ${edge.wall.x1.toFixed(4)} ${edge.wall.y1.toFixed(4)} L ${edge.wall.x2.toFixed(4)} ${edge.wall.y2.toFixed(4)}`;
-      } else if (edge.wall.type === "path") {
-        d = edge.wall.d;
-      } else {
-        d = arcPath(edge.wall.radius, edge.wall.a0, edge.wall.a1);
-      }
-      (edge.kind === "ear" ? earWalls : headWalls).push(d);
-    }
-    return { earWalls, headWalls };
-  }, [level.edges]);
+  const wallPaths = useMemo(
+    () => ({
+      earWalls: mergeWallPaths(level.edges, true),
+      headWalls: mergeWallPaths(level.edges, false),
+    }),
+    [level.edges],
+  );
 
   const headOuterWall = useMemo(() => {
     if (level.headWallGaps.length === 0) return [];
@@ -409,18 +530,21 @@ export function Maze({
         if (carrotsCollected.includes(cellId)) return null;
         const carrot = cells[cellId];
         if (!carrot) return null;
+        // Ear lanes are narrower than the head rings, so keep the carrot just
+        // inside the lane instead of letting it cover the walls.
+        const carrotScale = carrot.kind === "ear" ? 0.0086 : 0.0112;
         return (
           <g key={`carrot-${cellId}`} pointerEvents="none" data-carrot-token data-carrot-cell={cellId}>
             <circle
               cx={carrot.cx}
               cy={carrot.cy}
-              r={0.46 * tokenScale}
+              r={(carrot.kind === "ear" ? 0.38 : 0.46) * tokenScale}
               fill="#FF9A3C"
               opacity="0.26"
               className="target-pulse"
             />
             <g transform={`translate(${carrot.cx} ${carrot.cy})`}>
-              <g transform={`scale(${0.0112 * tokenScale}) translate(-50 -50)`}>
+              <g transform={`scale(${carrotScale * tokenScale}) translate(-50 -50)`}>
                 <DragonCarrotGlyph size={100} number={level.carrotNumbers[index]} />
               </g>
             </g>

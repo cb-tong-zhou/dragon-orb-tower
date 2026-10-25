@@ -175,6 +175,7 @@ export function PlayScreen({
       aliveRef.current = false;
       runIdRef.current += 1;
       stopSpeaking();
+      confetti.reset();
     };
   }, []);
 
@@ -249,7 +250,9 @@ export function PlayScreen({
       showToast(
         nextCoins.length === level.coinCells.length
           ? "All Dragon Coins found! Head to the door."
-          : `Dragon Coin ${nextCoins.length} of ${level.coinCells.length}!`,
+          : level.mission === "coins"
+            ? "Dragon Coin found! Keep exploring."
+            : `Dragon Coin ${nextCoins.length} of ${level.coinCells.length}!`,
       );
     }
 
