@@ -10,6 +10,9 @@ screenshots/
 # Codegraph index
 .codegraph/
 
+# Vercel local project link
+.vercel/
+
 # Env & secrets
 .env
 .env.*
@@ -20,3 +23,5 @@ screenshots/
 *.log
 .idea/
 .vscode/
+.vercel
+.env*
