@@ -19,8 +19,12 @@ export function HowToPlayModal({ onClose }: Props) {
               <IconMap size={24} />
             </span>
             <div>
-              <strong>Tap a corridor</strong>
-              <p>Your hero walks until the next fork. Then choose a new direction. Every visit builds a fresh maze.</p>
+              <strong>Tap a path beside Sora</strong>
+              <p>
+                Your hero walks to the next fork, then waits. Taps far away are
+                ignored, so you choose every turn yourself. Every visit builds a
+                fresh maze.
+              </p>
             </div>
           </div>
           <div className="howto-step">

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 import { floorStory, TOTAL_FLOORS } from "../content/floors";
 import { getCharacter, SORA } from "../content/characters";
-import { bfsPath, corridorPath } from "../generator/graph";
+import { bfsPath, localWalkPath } from "../generator/graph";
 import { generateFloor } from "../generator/generate";
 import type { Level } from "../generator/types";
 import type { Settings } from "../game/storage";
@@ -136,6 +136,7 @@ export function PlayScreen({
   const completedRef = useRef(false);
   const aliveRef = useRef(true);
   const runIdRef = useRef(0);
+  const lastFarTapRef = useRef(0);
 
   const showToast = useCallback((text: string) => {
     setToast({ id: Date.now() + Math.random(), text });
@@ -401,10 +402,23 @@ export function PlayScreen({
   const handleCellTap = (cellId: number) => {
     if (introOpen || showComplete || lockOpenRef.current || movingRef.current) return;
     if (cellId === playerRef.current) return;
-    const fullPath = bfsPath(level, playerRef.current, cellId);
-    if (fullPath.length < 2) return;
-    const walk = settings.easyWalk ? fullPath : corridorPath(level, fullPath);
-    if (walk.length < 2) return;
+
+    // Local walking: a tap only ever moves Sora through the corridor he is in
+    // (or an adjacent branch at a fork). Taps on distant coins, orbs, or doors
+    // are ignored so repeated tapping can never chain into a found path.
+    // Easy walking is the explicit opt-in that walks a whole route.
+    const walk = settings.easyWalk
+      ? bfsPath(level, playerRef.current, cellId)
+      : [playerRef.current, ...(localWalkPath(level, playerRef.current, cellId) ?? [])];
+
+    if (walk.length < 2) {
+      const now = Date.now();
+      if (now - lastFarTapRef.current > 1600) {
+        lastFarTapRef.current = now;
+        showToast("Tap a path right next to Sora!");
+      }
+      return;
+    }
 
     initAudio();
     playTap();
@@ -686,7 +700,7 @@ export function PlayScreen({
             {floor === 1 && !seenTutorial ? (
               <div className="tutorial-box">
                 <strong>How to play</strong>
-                <p>Tap a corridor to walk. You stop at each fork, then choose again.</p>
+                <p>Tap a path right beside Sora. He walks to the next fork and waits for your next tap.</p>
                 <p>
                   Rescue your friend, reach the center star, then head for the door. This first
                   floor does not need the Dragon Radar.

@@ -97,6 +97,59 @@ export function corridorPath(level: Level, path: number[]): number[] {
   return path;
 }
 
+/**
+ * The local corridor a tap is allowed to use: from `from` in one direction
+ * until the first junction, portal, or dead end. Nothing past a fork is ever
+ * included, so a distant tap can never auto-path Sora across the maze.
+ */
+export function localCorridor(level: Level, from: number, first: number): number[] {
+  const path: number[] = [];
+  const visited = new Set<number>([from]);
+  let previous = from;
+  let current = first;
+
+  while (!visited.has(current)) {
+    path.push(current);
+    visited.add(current);
+
+    const cell = level.cells[current];
+    if (
+      !cell ||
+      cell.kind === "start" ||
+      cell.kind === "exit" ||
+      cell.kind === "chamber"
+    ) {
+      break;
+    }
+
+    const next = openNeighbors(level, current).filter((id) => id !== previous);
+    if (next.length === 0 || next.length >= 2) break;
+
+    previous = current;
+    current = next[0];
+  }
+
+  return path;
+}
+
+/**
+ * Resolve a tap into a local walk. Returns the cells Sora may walk (excluding
+ * his own cell) when the tapped cell lies inside the corridor he occupies or
+ * an adjacent branch, or null when the tap is too far away to honor without
+ * pathfinding. Repeated distant taps therefore never chain into a route.
+ */
+export function localWalkPath(level: Level, from: number, tapped: number): number[] | null {
+  if (from === tapped) return null;
+  if (tapped < 0 || tapped >= level.cells.length) return null;
+
+  for (const first of openNeighbors(level, from)) {
+    const corridor = localCorridor(level, from, first);
+    if (corridor.includes(tapped)) return corridor;
+  }
+
+  return null;
+}
+
 export function reachableCount(level: Level, from: number): number {
   return bfsDistances(level, from).filter((distance) => distance >= 0).length;
 }

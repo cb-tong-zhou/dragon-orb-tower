@@ -26,7 +26,7 @@ Open <http://127.0.0.1:4173/>.
 
 ## How to play
 
-- **Tap a corridor.** Sora walks to the next fork, then waits for your next tap.
+- **Tap a path right beside Sora.** He walks to the next fork, then waits for your next tap. Taps on far-away coins, orbs, or doors are ignored on purpose — you make every choice at every fork.
 - **Every floor has its own mission.** Floor 1 is a rescue with a star in the center. Floor 2 asks you to collect every Dragon Coin and count them at the door. Floor 3 hides numbered carrots in a bunny-shaped maze and asks you to crack an `A = 1` code. Floors 4–7 bring back the Dragon Radar, which reveals the hidden orb.
 - **Rescue the trapped friend and complete the mission.** The sealed door has a red X until that floor's goals are finished, then turns green.
 - **Dragon Coins are bonus treasure on radar floors.** Three are hidden in side paths on Floors 4–7. Floor 2's twelve coins are the main counting mission, so its mission chip deliberately hides the total.
