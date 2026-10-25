@@ -1,7 +1,8 @@
 import { chromium } from "playwright";
 
-const BASE = "http://127.0.0.1:5173/";
+const BASE = process.env.E2E_BASE ?? "http://127.0.0.1:5173/";
 const KEY = "dragon-orb-tower-save-v1";
+const KEY2 = "dragon-orb-tower-save-v2";
 const outDir = "screenshots";
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 const errors = [];
@@ -16,8 +17,10 @@ function watch(page, label) {
 async function contextWithSave(save, viewport = { width: 1280, height: 900 }) {
   const context = await browser.newContext({ viewport });
   await context.addInitScript(
-    ({ key, value }) => localStorage.setItem(key, JSON.stringify(value)),
-    { key: KEY, value: save },
+    ({ v1, v2, value }) => {
+      localStorage.setItem(value.version === 2 ? v2 : v1, JSON.stringify(value));
+    },
+    { v1: KEY, v2: KEY2, value: save },
   );
   return context;
 }
@@ -47,46 +50,115 @@ async function tapCell(page, cellId) {
   return waitForWalkEnd(page);
 }
 
-async function planStop(page, target) {
-  return page.evaluate(({ target }) => {
-    const level = window.__dragonTowerLevel;
-    const start = Number(document.querySelector("[data-player-token]").getAttribute("data-player-cell"));
-    const adjacency = level.cells.map(() => []);
-    for (const edge of level.edges) {
-      if (!edge.open) continue;
-      adjacency[edge.a].push(edge.b);
-      adjacency[edge.b].push(edge.a);
-    }
-    const previous = new Array(level.cells.length).fill(-1);
-    const visited = new Uint8Array(level.cells.length);
-    visited[start] = 1;
-    const queue = [start];
-    let head = 0;
-    while (head < queue.length) {
-      const current = queue[head++];
-      for (const next of adjacency[current]) {
-        if (visited[next]) continue;
-        visited[next] = 1;
-        previous[next] = current;
-        queue.push(next);
+/**
+ * BFS + local-corridor route info for a target, mirroring the runtime rules:
+ * `step` is the first cell on the shortest route, `localStop` is where a tap
+ * on the target would actually walk to (the end of the corridor containing
+ * the target), or null when the target lies beyond a fork.
+ */
+async function routeInfo(page, target) {
+  return page.evaluate(
+    ({ target }) => {
+      const level = window.__dragonTowerLevel;
+      const start = Number(
+        document.querySelector("[data-player-token]").getAttribute("data-player-cell"),
+      );
+      const adjacency = level.cells.map(() => []);
+      for (const edge of level.edges) {
+        if (!edge.open) continue;
+        adjacency[edge.a].push(edge.b);
+        adjacency[edge.b].push(edge.a);
       }
-    }
-    const path = [];
-    let cursor = target;
-    while (cursor !== -1) {
-      path.push(cursor);
-      cursor = previous[cursor];
-    }
-    path.reverse();
-    let stop = target;
-    for (let i = 1; i < path.length; i++) {
-      if (adjacency[path[i]].length >= 3) {
-        stop = path[i];
-        break;
+
+      const previous = new Array(level.cells.length).fill(-1);
+      const distance = new Array(level.cells.length).fill(-1);
+      const visited = new Uint8Array(level.cells.length);
+      visited[start] = 1;
+      distance[start] = 0;
+      const queue = [start];
+      let head = 0;
+      while (head < queue.length) {
+        const current = queue[head++];
+        for (const next of adjacency[current]) {
+          if (visited[next]) continue;
+          visited[next] = 1;
+          previous[next] = current;
+          distance[next] = distance[current] + 1;
+          queue.push(next);
+        }
       }
+
+      const segments = [];
+      for (const first of adjacency[start]) {
+        const path = [];
+        const seen = new Set([start]);
+        let prev = start;
+        let current = first;
+        while (!seen.has(current)) {
+          path.push(current);
+          seen.add(current);
+          const cell = level.cells[current];
+          if (cell.kind === "start" || cell.kind === "exit" || cell.kind === "chamber") break;
+          const next = adjacency[current].filter((id) => id !== prev);
+          if (next.length === 0 || next.length >= 2) break;
+          prev = current;
+          current = next[0];
+        }
+        segments.push(path);
+      }
+
+      const containing = segments.find((path) => path.includes(target)) ?? null;
+      const path = [];
+      let cursor = target;
+      while (cursor !== -1) {
+        path.push(cursor);
+        cursor = previous[cursor];
+      }
+      path.reverse();
+
+      return {
+        start,
+        distance: distance[target],
+        step: distance[target] >= 1 ? path[1] : null,
+        localStop: containing ? containing[containing.length - 1] : null,
+      };
+    },
+    { target },
+  );
+}
+
+/**
+ * Walk to a target under the local-only control rules. Each tap advances one
+ * corridor (or one step at a fork). Mid-corridor targets such as coins are
+ * collected in passing; the walk succeeds once Sora reaches or passes them.
+ */
+async function walkTo(page, target, attempts = 200) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const current = await playerCell(page);
+    if (current === target) return current;
+
+    const before = await routeInfo(page, target);
+    if (before.step === null) {
+      throw new Error(`No route from ${current} to ${target}`);
     }
-    return { start, path, stop, stopDegree: adjacency[stop].length };
-  }, { target });
+
+    const tapTarget = before.localStop ?? before.step;
+    const after = await tapCell(page, tapTarget);
+    const info = await routeInfo(page, target);
+    if (info.distance > before.distance) return after;
+  }
+  throw new Error(`Could not reach cell ${target}; stopped at ${await playerCell(page)}`);
+}
+
+/** Walk to a target with Easy walking on: one tap follows the whole route. */
+async function walkToEasy(page, target, attempts = 40) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const current = await playerCell(page);
+    if (current === target) return current;
+    const after = await tapCell(page, target);
+    if (after === target) return after;
+  }
+  throw new Error(`Could not reach cell ${target}; stopped at ${await playerCell(page)}`);
 }
 
 // ---------- helpers for mission flows ----------
@@ -96,26 +168,8 @@ async function chipDone(page, mission) {
   return (((await chip.first().getAttribute("class")) ?? "").includes("is-done"));
 }
 
-async function walkTo(page, target, attempts = 60) {
-  let last = null;
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const current = await playerCell(page);
-    if (current === target) return current;
-    const next = await tapCell(page, target);
-    if (next === target) return next;
-    if (next === last && next === current) await page.waitForTimeout(120);
-    last = next;
-  }
-  throw new Error(`Could not reach cell ${target}; stopped at ${await playerCell(page)}`);
-}
-
-async function openFloor(completed, floor, settings = { sound: false, voice: false, easyWalk: true }) {
-  const context = await contextWithSave({
-    version: 1,
-    completed,
-    settings,
-    seenTutorial: true,
-  });
+async function openFloorWithSave(save, floor, viewport) {
+  const context = await contextWithSave(save, viewport);
   const page = await context.newPage();
   watch(page, `floor-${floor}`);
   await page.goto(BASE, { waitUntil: "networkidle" });
@@ -132,12 +186,102 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
   return { context, page };
 }
 
+async function openFloor(
+  completed,
+  floor,
+  settings = { sound: false, voice: false, easyWalk: true, friendHelp: "off" },
+) {
+  return openFloorWithSave(
+    {
+      version: 1,
+      completed,
+      settings,
+      seenTutorial: true,
+    },
+    floor,
+  );
+}
+
+/**
+ * Find the nearest junction with a dead-end branch (optionally one long
+ * enough for a grumblin to sit 1-3 cells from the leaf). Returns
+ * { junction, firstCell, deadEnd, pathLength } or null.
+ */
+function findDeadEndBranch(minPathLength = 2) {
+  return (page) =>
+    page.evaluate((minPathLength) => {
+      const level = window.__dragonTowerLevel;
+      const start = Number(
+        document.querySelector("[data-player-token]").getAttribute("data-player-cell"),
+      );
+      const adjacency = level.cells.map(() => []);
+      for (const edge of level.edges) {
+        if (!edge.open) continue;
+        adjacency[edge.a].push(edge.b);
+        adjacency[edge.b].push(edge.a);
+      }
+      const isPortal = (cell) =>
+        cell.kind === "start" || cell.kind === "exit" || cell.kind === "chamber";
+
+      const order = [start];
+      const visited = new Uint8Array(level.cells.length);
+      visited[start] = 1;
+      let head = 0;
+      while (head < order.length) {
+        const current = order[head++];
+        for (const next of adjacency[current]) {
+          if (visited[next]) continue;
+          visited[next] = 1;
+          order.push(next);
+        }
+      }
+
+      for (const junction of order) {
+        if (adjacency[junction].length < 3) continue;
+        for (const first of adjacency[junction]) {
+          const path = [junction, first];
+          let prev = junction;
+          let current = first;
+          let ending = null;
+          while (path.length < 60) {
+            const cell = level.cells[current];
+            if (isPortal(cell)) {
+              ending = "portal";
+              break;
+            }
+            const next = adjacency[current].filter((id) => id !== prev);
+            if (next.length === 0) {
+              ending = "dead-end";
+              break;
+            }
+            if (next.length >= 2) {
+              ending = "junction";
+              break;
+            }
+            prev = current;
+            current = next[0];
+            path.push(current);
+          }
+          if (path.length >= 60) continue;
+          if (
+            ending === "dead-end" &&
+            (level.cells[current].kind === "normal" || level.cells[current].kind === "ear") &&
+            path.length >= minPathLength
+          ) {
+            return { junction, firstCell: first, deadEnd: current, pathLength: path.length };
+          }
+        }
+      }
+      return null;
+    }, minPathLength);
+}
+
 // ---------- floor 1: rescue + center star, default walking, tutorial, hints ----------
 {
   const context = await contextWithSave({
     version: 1,
     completed: 0,
-    settings: { sound: false, voice: false, easyWalk: false },
+    settings: { sound: false, voice: false, easyWalk: false, friendHelp: "off" },
     seenTutorial: false,
   });
   const page = await context.newPage();
@@ -172,12 +316,44 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
 
   const start = await playerCell(page);
   const avoid = new Set([start, level.friendCell, level.orbCell, level.exitCell]);
+
+  // Walk to the nearest junction first so local corridors have real length.
+  const junction = await page.evaluate(() => {
+    const level = window.__dragonTowerLevel;
+    const start = Number(
+      document.querySelector("[data-player-token]").getAttribute("data-player-cell"),
+    );
+    const adjacency = level.cells.map(() => []);
+    for (const edge of level.edges) {
+      if (!edge.open) continue;
+      adjacency[edge.a].push(edge.b);
+      adjacency[edge.b].push(edge.a);
+    }
+    const visited = new Uint8Array(level.cells.length);
+    visited[start] = 1;
+    const queue = [start];
+    let head = 0;
+    while (head < queue.length) {
+      const current = queue[head++];
+      if (adjacency[current].length >= 3 && current !== start) return current;
+      for (const next of adjacency[current]) {
+        if (visited[next]) continue;
+        visited[next] = 1;
+        queue.push(next);
+      }
+    }
+    return -1;
+  });
+  if (junction === -1) throw new Error("No junction found on Floor 1");
+  await walkTo(page, junction);
+
+  // Corridor stop: a mid-corridor tap walks to the end of the corridor.
   let stopPlan = null;
   for (const cell of level.cells) {
     if (avoid.has(cell.id)) continue;
-    const plan = await planStop(page, cell.id);
-    if (plan.path.length > 2 && plan.stop !== cell.id) {
-      stopPlan = { target: cell.id, ...plan };
+    const info = await routeInfo(page, cell.id);
+    if (info.localStop !== null && info.localStop !== cell.id && info.distance >= 1) {
+      stopPlan = { target: cell.id, stop: info.localStop };
       break;
     }
   }
@@ -187,11 +363,35 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
     target: stopPlan.target,
     expected: stopPlan.stop,
     actual: stopCell,
-    path: stopPlan.path.length,
   });
   if (stopCell !== stopPlan.stop) {
     throw new Error(`Corridor stop mismatch: expected ${stopPlan.stop}, got ${stopCell}`);
   }
+
+  // Anti-auto-path: a tap beyond a fork must not move Sora at all.
+  let farPlan = null;
+  for (const cell of level.cells) {
+    if (avoid.has(cell.id) || cell.id === stopPlan.target) continue;
+    const info = await routeInfo(page, cell.id);
+    if (info.localStop === null && info.distance >= 2) {
+      farPlan = { target: cell.id };
+      break;
+    }
+  }
+  if (!farPlan) throw new Error("No beyond-fork target found on Floor 1");
+  const beforeFarTap = await playerCell(page);
+  const afterFarTap = await tapCell(page, farPlan.target);
+  if (afterFarTap !== beforeFarTap) {
+    throw new Error(
+      `Distant tap on ${farPlan.target} moved Sora from ${beforeFarTap} to ${afterFarTap} without Easy walking`,
+    );
+  }
+  await page.waitForSelector(".toast", { timeout: 2500 });
+  const farToast = await page.locator(".toast").innerText();
+  if (!/right next to Sora/i.test(farToast)) {
+    throw new Error(`Missing far-tap feedback, got: ${farToast}`);
+  }
+  console.log("floor 1 far tap ignored", { target: farPlan.target, toast: farToast });
 
   await page.getByRole("button", { name: /^Hint$/ }).click();
   await page.waitForSelector(".hint-path", { timeout: 3000 });
@@ -206,11 +406,16 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
   await page.waitForTimeout(250);
   await page.screenshot({ path: `${outDir}/13-floor1-friend-rescued.png` });
 
-  if ((await page.locator("[data-orb-token]").count()) !== 1) {
-    throw new Error("Floor 1 center orb disappeared before collection");
-  }
-  if (!/Door sealed/i.test(await page.locator('[data-mission="door"]').innerText())) {
-    throw new Error("Floor 1 door opened before the center orb was collected");
+  // The route to Mira may legitimately pass through the center and collect
+  // the orb early, so only assert the pre-orb state when that did not happen.
+  const orbCollectedEarly = await chipDone(page, "orb");
+  if (!orbCollectedEarly) {
+    if ((await page.locator("[data-orb-token]").count()) !== 1) {
+      throw new Error("Floor 1 center orb disappeared before collection");
+    }
+    if (!/Door sealed/i.test(await page.locator('[data-mission="door"]').innerText())) {
+      throw new Error("Floor 1 door opened before the center orb was collected");
+    }
   }
 
   await walkTo(page, level.orbCell);
@@ -263,10 +468,10 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
     throw new Error("Floor 2 coin chip should not reveal the total before the count question");
   }
 
-  await walkTo(page, level.friendCell);
+  await walkToEasy(page, level.friendCell);
   if (!(await chipDone(page, "friend"))) throw new Error("Bo was not rescued");
   for (const coin of level.coinCells) {
-    await walkTo(page, coin);
+    await walkToEasy(page, coin);
   }
   if (!(await chipDone(page, "coins"))) throw new Error("Not all Floor 2 coins were collected");
   if ((await page.locator("[data-coin-token]").count()) !== 0) {
@@ -275,7 +480,7 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
   await page.waitForTimeout(250);
   await page.screenshot({ path: `${outDir}/16-floor2-all-coins.png` });
 
-  await walkTo(page, level.exitCell);
+  await walkToEasy(page, level.exitCell);
   await page.waitForSelector(".lock-card", { timeout: 10000 });
   await page.waitForTimeout(300);
   console.log("floor 2 count question", await page.locator("#door-lock-title").innerText());
@@ -327,17 +532,17 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
     throw new Error("Floor 3 carrot mission chip was missing");
   }
 
-  await walkTo(page, level.friendCell);
+  await walkToEasy(page, level.friendCell);
   if (!(await chipDone(page, "friend"))) throw new Error("Pico was not rescued");
   for (const carrot of level.carrotCells) {
-    await walkTo(page, carrot);
+    await walkToEasy(page, carrot);
   }
   if (!(await chipDone(page, "carrots"))) throw new Error("Not all Floor 3 carrots were collected");
   console.log("floor 3 carrot chip", await page.locator('[data-mission="carrots"]').innerText());
   await page.waitForTimeout(250);
   await page.screenshot({ path: `${outDir}/20-floor3-all-carrots.png` });
 
-  await walkTo(page, level.exitCell);
+  await walkToEasy(page, level.exitCell);
   await page.waitForSelector(".lock-card", { timeout: 10000 });
   await page.waitForTimeout(300);
   console.log("floor 3 code question", await page.locator("#door-lock-title").innerText());
@@ -384,7 +589,7 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
     throw new Error("Floor 4 orb should be hidden before the radar");
   }
 
-  await walkTo(page, level.radarCell);
+  await walkToEasy(page, level.radarCell);
   if (!(await chipDone(page, "radar"))) throw new Error("Floor 4 radar was not collected");
   if ((await page.locator("[data-radar-token]").count()) !== 0) {
     throw new Error("Floor 4 radar stayed visible after collection");
@@ -395,13 +600,13 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
   await page.waitForTimeout(250);
   await page.screenshot({ path: `${outDir}/24-floor4-radar-found.png` });
 
-  await walkTo(page, level.friendCell);
-  await walkTo(page, level.orbCell);
+  await walkToEasy(page, level.friendCell);
+  await walkToEasy(page, level.orbCell);
   if (!(await chipDone(page, "orb"))) throw new Error("Floor 4 orb was not collected");
   if (!/Door open/i.test(await page.locator('[data-mission="door"]').innerText())) {
     throw new Error("Floor 4 door did not open");
   }
-  await walkTo(page, level.exitCell);
+  await walkToEasy(page, level.exitCell);
   await page.waitForSelector(".complete-card", { timeout: 10000 });
   await page.waitForTimeout(500);
   const bonusText = await page.locator(".complete-bonus").innerText();
@@ -411,12 +616,148 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
   await context.close();
 }
 
+// ---------- friends scouting: manual dispatch, mark, charge, recall rules ----------
+{
+  const { context, page } = await openFloorWithSave(
+    {
+      version: 2,
+      completed: 0,
+      settings: { sound: false, voice: false, easyWalk: false, friendHelp: "manual" },
+      seenTutorial: true,
+      rescuedFriends: [],
+      seenScoutTutorial: true,
+    },
+    1,
+  );
+  const level = await page.evaluate(() => window.__dragonTowerLevel);
+
+  await walkTo(page, level.friendCell);
+  if (!(await chipDone(page, "friend"))) throw new Error("Mira was not rescued for scouting");
+
+  await page.waitForSelector("[data-party-bar]");
+  const miraChip = page.locator('[data-party-bar] [data-party-member="mira"]');
+  if ((await miraChip.getAttribute("data-party-charge")) !== "true") {
+    throw new Error("Mira should start with a scout charge");
+  }
+  if ((await page.locator("[data-party-cell]").count()) < 1) {
+    throw new Error("Mira is not following inside the maze");
+  }
+
+  const plan = await findDeadEndBranch()(page);
+  if (!plan) throw new Error("No dead-end branch found near Mira");
+  console.log("floor 1 scout plan", plan);
+  await walkTo(page, plan.junction);
+
+  await miraChip.click();
+  await page.waitForTimeout(150);
+  if ((await page.locator("[data-scout-highlight]").count()) < 1) {
+    throw new Error("Eligible branches did not highlight after selecting Mira");
+  }
+  await tapCell(page, plan.firstCell);
+  await page.waitForSelector("[data-scout-mark]", { timeout: 9000 });
+  if ((await page.locator(`[data-scout-dead-end="${plan.deadEnd}"]`).count()) !== 1) {
+    throw new Error("The dead-end mark is missing or on the wrong cell");
+  }
+  if ((await miraChip.getAttribute("data-party-charge")) !== "false") {
+    throw new Error("Mira's charge did not spend after a mark");
+  }
+
+  await page
+    .locator('.party-token[data-party-member="mira"][data-party-mode="follow"]')
+    .waitFor({ timeout: 9000 });
+
+  // Sora can still walk into the marked corridor and the mark stays.
+  await walkTo(page, plan.deadEnd);
+  if ((await page.locator("[data-scout-mark]").count()) !== 1) {
+    throw new Error("The dead-end mark vanished after Sora walked in");
+  }
+
+  // A used charge explains itself instead of re-selecting.
+  await walkTo(page, plan.junction);
+  await miraChip.click();
+  const usedToast = await page.locator(".toast").innerText();
+  if (!/already checked a path/i.test(usedToast)) {
+    throw new Error(`Used-charge feedback missing, got: ${usedToast}`);
+  }
+  await page.screenshot({ path: `${outDir}/30-floor1-scout-mark.png` });
+  await context.close();
+}
+
+// ---------- grumblin rescue: floor 2 tutorial encounter ----------
+{
+  const { context, page } = await openFloorWithSave(
+    {
+      version: 2,
+      completed: 1,
+      settings: { sound: false, voice: false, easyWalk: false, friendHelp: "manual" },
+      seenTutorial: true,
+      rescuedFriends: ["mira"],
+      seenScoutTutorial: true,
+    },
+    2,
+  );
+  const level = await page.evaluate(() => window.__dragonTowerLevel);
+
+  await walkTo(page, level.friendCell);
+  if (!(await chipDone(page, "friend"))) throw new Error("Bo was not rescued for the grumblin test");
+
+  // A valid tutorial spawn needs a branch long enough for the grumblin to
+  // sit at least two cells away from Sora (path length >= 4).
+  const plan = await findDeadEndBranch(4)(page);
+  if (!plan) {
+    console.log("grumblin block skipped: no long dead-end branch near Bo");
+  } else {
+    console.log("floor 2 grumblin plan", plan);
+    await walkTo(page, plan.junction);
+    await page.locator('[data-party-bar] [data-party-member="bo"]').click();
+    await page.waitForTimeout(150);
+    await tapCell(page, plan.firstCell);
+
+    const gremlin = page.locator("[data-gremlin-cell]").first();
+    await gremlin.waitFor({ timeout: 12000 });
+    const gremlinCell = Number(await gremlin.getAttribute("data-gremlin-cell"));
+    if ((await page.locator('[data-party-bar] [data-party-member="bo"][data-party-blocked="true"]').count()) !== 1) {
+      throw new Error("Bo is not flagged as blocked in the party bar");
+    }
+    if ((await page.locator("[data-blocked-friend]").count()) < 1) {
+      throw new Error("Bo's maze token is not flagged as blocked");
+    }
+
+    // The hint points at the grumblin while a friend is blocked.
+    await page.getByRole("button", { name: /^Hint$/ }).click();
+    const hintText = await page.locator(".toast").innerText();
+    if (!/grumblin/i.test(hintText)) {
+      throw new Error(`Hint did not target the grumblin, got: ${hintText}`);
+    }
+    const doorText = await page.locator('[data-mission="door"]').innerText();
+    if (/Door open/i.test(doorText)) {
+      throw new Error("The door opened while a friend is blocked");
+    }
+
+    // Walk over and shoo it; the mark survives and Bo comes home.
+    await walkTo(page, gremlinCell);
+    await page.locator("[data-gremlin-cell]").first().waitFor({ state: "detached", timeout: 6000 });
+    await page
+      .locator(
+        '.party-token[data-party-member="bo"][data-party-mode="return"], .party-token[data-party-member="bo"][data-party-mode="follow"]',
+      )
+      .first()
+      .waitFor({ timeout: 12000 });
+    if ((await page.locator("[data-scout-mark]").count()) !== 1) {
+      throw new Error("The dead-end mark did not survive the rescue");
+    }
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${outDir}/31-floor2-grumblin-rescue.png` });
+  }
+  await context.close();
+}
+
 // ---------- every entry builds a fresh maze ----------
 {
   const context = await contextWithSave({
     version: 1,
     completed: 1,
-    settings: { sound: false, voice: false, easyWalk: true },
+    settings: { sound: false, voice: false, easyWalk: true, friendHelp: "off" },
     seenTutorial: true,
   });
   const page = await context.newPage();
@@ -459,7 +800,7 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
   const context = await contextWithSave({
     version: 1,
     completed: 3,
-    settings: { sound: false, voice: false, easyWalk: false },
+    settings: { sound: false, voice: false, easyWalk: false, friendHelp: "off" },
     seenTutorial: true,
   });
   const page = await context.newPage();
@@ -472,10 +813,16 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
   const progress = await page.locator(".progress-box-head strong").innerText();
   console.log("settings progress", progress);
   await page.getByRole("switch", { name: /Easy walking/i }).click();
+  await page.getByRole("radio", { name: /I tap to send/i }).click();
   await page.getByRole("button", { name: "Done" }).click();
-  const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), KEY);
-  console.log("settings saved", saved.settings);
+  const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), KEY2);
+  console.log("settings saved", saved);
+  if (saved.version !== 2) throw new Error("The v1 save did not migrate to v2");
   if (!saved.settings.easyWalk) throw new Error("Easy walking was not persisted");
+  if (saved.settings.friendHelp !== "manual") throw new Error("Friend help mode was not persisted");
+  if (JSON.stringify(saved.rescuedFriends) !== JSON.stringify(["mira", "bo", "pico"])) {
+    throw new Error(`v2 migration inferred the wrong roster: ${JSON.stringify(saved.rescuedFriends)}`);
+  }
 
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: /Reset all progress/i }).click();
@@ -483,9 +830,10 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
   await page.waitForSelector(".home-screen");
   await page.waitForTimeout(450);
   const orbText = await page.locator(".hero-badge").innerText();
-  const resetSave = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), KEY);
+  const resetSave = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), KEY2);
   console.log("reset", { orbText, completed: resetSave.completed, settings: resetSave.settings });
   if (resetSave.completed !== 0) throw new Error("Progress did not reset");
+  if (resetSave.rescuedFriends.length !== 0) throw new Error("Rescued friends did not reset");
   await page.screenshot({ path: `${outDir}/16-home-after-reset.png` });
   await context.close();
 }
@@ -495,7 +843,7 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
   const context = await contextWithSave({
     version: 1,
     completed: 7,
-    settings: { sound: false, voice: false, easyWalk: true },
+    settings: { sound: false, voice: false, easyWalk: true, friendHelp: "off" },
     seenTutorial: true,
   });
   const page = await context.newPage();
@@ -517,9 +865,10 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
   await page.waitForSelector(".home-screen");
   await page.waitForTimeout(450);
   const orbText = await page.locator(".hero-badge").innerText();
-  const save = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), KEY);
+  const save = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), KEY2);
   console.log("play again", { orbText, completed: save.completed });
   if (save.completed !== 0) throw new Error("Play again did not reset progress");
+  if (save.rescuedFriends.length !== 0) throw new Error("Play again kept rescued friends");
   await context.close();
 }
 
@@ -528,7 +877,7 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
   const context = await contextWithSave({
     version: 1,
     completed: 6,
-    settings: { sound: false, voice: false, easyWalk: true },
+    settings: { sound: false, voice: false, easyWalk: true, friendHelp: "off" },
     seenTutorial: true,
   });
   const page = await context.newPage();
@@ -571,7 +920,7 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
     orbFound = await chipDone(orbChip);
   }
   if (!rescued || !radarFound || !orbFound) throw new Error("Floor 7 objectives were not completed");
-  await tapCell(page, level.exitCell);
+  await walkToEasy(page, level.exitCell);
   await page.waitForSelector(".complete-card");
   const completeTitle = await page.locator("#floor-complete-title").innerText();
   console.log("floor 7 complete", completeTitle);
@@ -588,7 +937,7 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
     {
       version: 1,
       completed: 2,
-      settings: { sound: false, voice: false, easyWalk: false },
+      settings: { sound: false, voice: false, easyWalk: false, friendHelp: "off" },
       seenTutorial: true,
     },
     { width: 390, height: 844 },
@@ -625,7 +974,7 @@ async function openFloor(completed, floor, settings = { sound: false, voice: fal
     {
       version: 1,
       completed: 7,
-      settings: { sound: false, voice: false, easyWalk: true },
+      settings: { sound: false, voice: false, easyWalk: true, friendHelp: "off" },
       seenTutorial: true,
     },
     { width: 390, height: 844 },

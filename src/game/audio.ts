@@ -124,6 +124,18 @@ export function playPage() {
   tone(660, 0.08, { type: "sine", volume: 0.015, delay: 0.04 });
 }
 
+/** Soft double chalk scratch when a friend stamps a dead-end X. */
+export function playChalk() {
+  tone(190, 0.05, { type: "triangle", volume: 0.03, slideTo: 150 });
+  tone(210, 0.05, { type: "triangle", volume: 0.026, delay: 0.09, slideTo: 160 });
+}
+
+/** Comedic poof when a grumblin is shooed away. */
+export function playPoof() {
+  tone(620, 0.16, { type: "sine", volume: 0.035, slideTo: 120 });
+  tone(320, 0.12, { type: "triangle", volume: 0.02, delay: 0.1, slideTo: 90 });
+}
+
 export function speak(text: string, enabled: boolean) {
   if (!enabled || typeof window === "undefined" || !("speechSynthesis" in window)) {
     return;

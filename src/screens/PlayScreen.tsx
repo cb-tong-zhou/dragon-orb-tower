@@ -2,16 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 import { floorStory, TOTAL_FLOORS } from "../content/floors";
 import { getCharacter, SORA } from "../content/characters";
-import { bfsPath, localWalkPath } from "../generator/graph";
+import { bfsPath, isJunction, localWalkPath } from "../generator/graph";
 import { generateFloor } from "../generator/generate";
 import type { Level } from "../generator/types";
 import type { Settings } from "../game/storage";
+import { FRIENDS_SCOUTING } from "../game/features";
+import { activeParty } from "../game/friends";
+import { useScoutDirector } from "../game/useScoutDirector";
+import type { ScoutEvent } from "../game/scoutDirector";
 import {
   initAudio,
+  playChalk,
   playCoin,
   playError,
   playOrb,
   playPage,
+  playPoof,
   playRadar,
   playRescue,
   playStep,
@@ -26,6 +32,7 @@ import { DragonCoinGlyph } from "../components/DragonCoin";
 import { DragonOrb } from "../components/DragonOrb";
 import { DragonRadarGlyph } from "../components/DragonRadar";
 import { Maze } from "../components/Maze";
+import { PartyBar } from "../components/PartyBar";
 import {
   IconBack,
   IconBulb,
@@ -44,11 +51,14 @@ interface Props {
   completed: number;
   settings: Settings;
   seenTutorial: boolean;
+  rescuedFriends: string[];
+  seenScoutTutorial: boolean;
   onBack: () => void;
   onComplete: (floor: number) => void;
   onNext: (floor: number) => void;
   onFinale: () => void;
   onTutorialSeen: () => void;
+  onScoutTutorialSeen: () => void;
   onSettingsChange: (patch: Partial<Settings>) => void;
 }
 
@@ -97,11 +107,14 @@ export function PlayScreen({
   completed,
   settings,
   seenTutorial,
+  rescuedFriends,
+  seenScoutTutorial,
   onBack,
   onComplete,
   onNext,
   onFinale,
   onTutorialSeen,
+  onScoutTutorialSeen,
   onSettingsChange,
 }: Props) {
   const story = floorStory(floor);
@@ -179,6 +192,116 @@ export function PlayScreen({
     };
   }, []);
 
+  // ---- Friends who scout ----
+  const scoutingEnabled = FRIENDS_SCOUTING && settings.friendHelp !== "off";
+
+  const partyIds = useMemo(
+    () => activeParty(rescuedFriends, friendRescued ? config.friendId : undefined),
+    [rescuedFriends, friendRescued, config.friendId],
+  );
+
+  const rosterIds = useMemo(() => {
+    const ids = [...rescuedFriends];
+    if (friendRescued && !ids.includes(config.friendId)) ids.push(config.friendId);
+    return ids;
+  }, [rescuedFriends, friendRescued, config.friendId]);
+
+  const handleScoutEvent = useCallback(
+    (event: ScoutEvent) => {
+      const name = getCharacter(event.characterId).name;
+      if (event.type === "sent") {
+        playTap();
+        return;
+      }
+      if (event.type === "mark") {
+        playChalk();
+        showToast(`${name} marked a dead end!`);
+        if (settings.voice) speak("That one's a dead end!", true);
+        return;
+      }
+      if (event.type === "no-mark") {
+        showToast(`${name}: that way keeps going!`);
+        if (settings.voice) speak("That way keeps going!", true);
+        return;
+      }
+      if (event.type === "blocked") {
+        playError();
+        showToast(`${name} is stuck behind a grumblin! Walk over and shoo it!`);
+        if (settings.voice) speak(`${name} is blocked. Go help!`, true);
+        return;
+      }
+      if (event.type === "freed") {
+        playPoof();
+        showToast(`The grumblin ran away! ${name} says thanks!`);
+        if (settings.voice) speak("Phew! Thanks!", true);
+        return;
+      }
+    },
+    [showToast, settings.voice],
+  );
+
+  const scouting = useScoutDirector({
+    enabled: scoutingEnabled,
+    level,
+    partyIds,
+    playerCell,
+    playerMoving: moving,
+    helpMode: settings.friendHelp,
+    modalsOpen: introOpen || lockOpen || showComplete,
+    onEvent: handleScoutEvent,
+  });
+
+  const handlePartySelect = useCallback(
+    (characterId: string) => {
+      initAudio();
+      playTap();
+      const name = getCharacter(characterId).name;
+
+      if (scouting.blockedGremlin?.blockedFriendId === characterId) {
+        const path = bfsPath(level, playerRef.current, scouting.blockedGremlin.cellId);
+        setHintPath(path);
+        showToast(`${name} needs help! Follow the dots to shoo the grumblin.`);
+        return;
+      }
+
+      const member = scouting.state.party.find((m) => m.characterId === characterId);
+      if (member && (member.mode === "scout" || member.mode === "return")) {
+        scouting.recallFriend(characterId);
+        showToast(`${name} is coming back!`);
+        return;
+      }
+
+      if (settings.friendHelp === "off") {
+        showToast("Friend help is switched off in Settings.");
+        return;
+      }
+
+      if (!member || !member.hasCharge) {
+        showToast(`${name} already checked a path this floor.`);
+        return;
+      }
+
+      if (!isJunction(level, playerRef.current)) {
+        scouting.selectFriend(characterId);
+        showToast(`Walk to a fork to send ${name} down a path.`);
+        return;
+      }
+
+      const selection = scouting.selectFriend(characterId);
+      showToast(selection ? `Tap a glowing path for ${name}!` : `${name} stays with you.`);
+    },
+    [scouting, level, settings.friendHelp, showToast],
+  );
+
+  useEffect(() => {
+    if (!scouting.selection) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") scouting.cancelSelection();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [scouting.selection, scouting.cancelSelection]);
+
   const closeLock = useCallback(() => {
     lockOpenRef.current = false;
     setLockOpen(false);
@@ -200,6 +323,7 @@ export function PlayScreen({
 
   const allCoins = level.coinCells.length > 0 && coinsCollected.length === level.coinCells.length;
   const allCarrots = level.carrotCells.length > 0 && carrotsCollected.length === level.carrotCells.length;
+  const scoutBlocked = scouting.enabled && scouting.hasBlockedFriend;
   const doorReady =
     friendRescued &&
     (level.mission === "rescue"
@@ -208,7 +332,8 @@ export function PlayScreen({
         ? allCoins
         : level.mission === "code"
           ? allCarrots
-          : radarCollected && orbCollected);
+          : radarCollected && orbCollected) &&
+    !scoutBlocked;
 
   useEffect(() => {
     if (introOpen || showComplete || lockOpenRef.current) return;
@@ -219,7 +344,13 @@ export function PlayScreen({
       setFriendRescued(true);
       setFollowerCell(cellId);
       playRescue();
-      showToast(`${friend.name} is safe!`);
+      const scoutTutorialDue = scoutingEnabled && !seenScoutTutorial;
+      showToast(
+        scoutTutorialDue
+          ? `${friend.name} is safe! Tap ${friend.name} below, then tap a glowing path.`
+          : `${friend.name} is safe!`,
+      );
+      if (scoutTutorialDue) onScoutTutorialSeen();
       if (settings.voice) speak(friend.greeting, true);
     }
 
@@ -268,7 +399,10 @@ export function PlayScreen({
     }
 
     if (cellId === level.exitCell) {
-      if (!doorReady) {
+      if (scoutBlocked) {
+        playError();
+        showToast("A friend needs help first! Shoo the grumblin to open the door.");
+      } else if (!doorReady) {
         playError();
         const missing = !friendRescuedRef.current
           ? `Find ${friend.name} first`
@@ -300,6 +434,10 @@ export function PlayScreen({
     showToast,
     finishFloor,
     doorReady,
+    scoutBlocked,
+    scoutingEnabled,
+    seenScoutTutorial,
+    onScoutTutorialSeen,
   ]);
 
   const missionBrief =
@@ -352,6 +490,19 @@ export function PlayScreen({
     if (introOpen || showComplete || lockOpenRef.current || movingRef.current) return;
     initAudio();
     playPage();
+
+    // A blocked friend always comes first: the hint points to the grumblin.
+    if (scouting.enabled && scouting.blockedGremlin) {
+      const gremlinPath = bfsPath(level, playerRef.current, scouting.blockedGremlin.cellId);
+      setHintPath(gremlinPath);
+      showToast(
+        gremlinPath.length <= 1
+          ? "You are right there! Shoo the grumblin!"
+          : "Follow the dots to shoo the grumblin!",
+      );
+      return;
+    }
+
     const target = !friendRescuedRef.current
       ? level.friendCell
       : level.mission === "rescue"
@@ -401,6 +552,15 @@ export function PlayScreen({
 
   const handleCellTap = (cellId: number) => {
     if (introOpen || showComplete || lockOpenRef.current || movingRef.current) return;
+
+    // A selected friend is waiting for a branch: consume the tap for the
+    // scout flow (dispatch, cancel on Sora, or politely ignore) and never
+    // move Sora while a friend is being sent.
+    if (scouting.enabled && scouting.selection) {
+      scouting.handleCellTap(cellId);
+      return;
+    }
+
     if (cellId === playerRef.current) return;
 
     // Local walking: a tap only ever moves Sora through the corridor he is in
@@ -591,7 +751,7 @@ export function PlayScreen({
           <Maze
             level={level}
             playerCell={playerCell}
-            followerCell={followerCell}
+            followerCell={scouting.enabled ? null : followerCell}
             friend={friend}
             player={SORA}
             accent={story.accent}
@@ -605,6 +765,10 @@ export function PlayScreen({
             moving={moving}
             showMoves={!moving && !introOpen && !showComplete && !lockOpen}
             onCellTap={handleCellTap}
+            party={scouting.enabled ? scouting.partyTokens : null}
+            scoutMarks={scouting.enabled ? scouting.marks : null}
+            scoutHighlight={scouting.enabled ? scouting.highlight : null}
+            gremlins={scouting.enabled ? scouting.gremlins : null}
           />
         </div>
         {toast ? (
@@ -613,6 +777,17 @@ export function PlayScreen({
           </div>
         ) : null}
       </main>
+
+      {FRIENDS_SCOUTING && rosterIds.length > 0 ? (
+        <PartyBar
+          roster={rosterIds}
+          party={scouting.state.party}
+          activeIds={partyIds}
+          selectedFriendId={scouting.selection}
+          helpMode={settings.friendHelp}
+          onSelect={handlePartySelect}
+        />
+      ) : null}
 
       <footer className="play-footer">
         <p>{missionFooter}</p>

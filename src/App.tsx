@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { TOTAL_FLOORS } from "./content/floors";
+import { FLOORS, TOTAL_FLOORS } from "./content/floors";
 import { HowToPlayModal } from "./components/HowToPlayModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { FinaleScreen } from "./screens/FinaleScreen";
@@ -7,6 +7,7 @@ import { HomeScreen } from "./screens/HomeScreen";
 import { PlayScreen } from "./screens/PlayScreen";
 import { TowerScreen } from "./screens/TowerScreen";
 import { setSoundEnabled } from "./game/audio";
+import { addRescuedFriend } from "./game/friends";
 import {
   DEFAULT_SAVE,
   loadSave,
@@ -57,6 +58,10 @@ export default function App() {
     setSave((current) => ({
       ...current,
       completed: Math.max(current.completed, Math.min(TOTAL_FLOORS, floor)),
+      rescuedFriends: addRescuedFriend(
+        current.rescuedFriends,
+        FLOORS[floor - 1].config.friendId,
+      ),
     }));
   };
 
@@ -88,6 +93,12 @@ export default function App() {
 
   const markTutorialSeen = () => {
     setSave((current) => (current.seenTutorial ? current : { ...current, seenTutorial: true }));
+  };
+
+  const markScoutTutorialSeen = () => {
+    setSave((current) =>
+      current.seenScoutTutorial ? current : { ...current, seenScoutTutorial: true },
+    );
   };
 
   return (
@@ -125,11 +136,14 @@ export default function App() {
           completed={save.completed}
           settings={save.settings}
           seenTutorial={save.seenTutorial}
+          rescuedFriends={save.rescuedFriends}
+          seenScoutTutorial={save.seenScoutTutorial}
           onBack={() => setScreen("tower")}
           onComplete={completeFloor}
           onNext={goToNextFloor}
           onFinale={openFinale}
           onTutorialSeen={markTutorialSeen}
+          onScoutTutorialSeen={markScoutTutorialSeen}
           onSettingsChange={updateSettings}
         />
       ) : null}

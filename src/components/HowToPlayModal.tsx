@@ -53,6 +53,19 @@ export function HowToPlayModal({ onClose }: Props) {
           </div>
           <div className="howto-step">
             <span className="howto-icon">
+              <IconStar size={24} />
+            </span>
+            <div>
+              <strong>Friends check paths for you</strong>
+              <p>
+                Rescued friends follow you and can scout one path per floor. Tap a friend
+                below the maze, then tap a glowing path. A true dead end gets a chalk X, so
+                you walk less.
+              </p>
+            </div>
+          </div>
+          <div className="howto-step">
+            <span className="howto-icon">
               <IconBulb size={24} />
             </span>
             <div>

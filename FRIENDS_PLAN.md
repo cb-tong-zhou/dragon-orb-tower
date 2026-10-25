@@ -1,9 +1,9 @@
 # Friends Who Scout — Design & Implementation Plan
 
-**Status:** proposal, no code changes made
+**Status:** implemented on `feature/friends-scout` — Phase 1 engine, Phase 2 UI (party bar, marks, overlays), grumblin blocks, and auto/manual scouting are live behind `FRIENDS_SCOUTING`/`GREMLIN_BLOCKS` (both on). Merge waits for the map redesign to land on `main`.
 **Date:** 2026-10-24
 **Scope:** the rescued characters inside *Dragon Orb Tower* (Mira, Bo, Pico, Roku, Taro, Nova, Kiko)
-**Hard constraint:** the map is being redesigned by another agent. This plan deliberately avoids `src/` changes and is written around a small renderer contract so it can be picked up after that work lands.
+**Note:** the authoritative, updated copy of this plan lives in the main worktree; this branch copy records the implementation status above.
 
 > If by "friends" you mean real-world or online friends (accounts, remote co-op, invites), that is a different feature. It needs a backend, identity, moderation, and a child-privacy review, which conflicts with the current "no accounts, no backend, local-only save" design. This plan is for the in-game friends the player rescues.
 

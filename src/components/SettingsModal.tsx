@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import type { Settings } from "../game/storage";
 import { TOTAL_FLOORS } from "../content/floors";
+import { FRIENDS_SCOUTING } from "../game/features";
 import { IconBulb, IconGear, IconSound, IconSpeaker, IconStar } from "./Icons";
 
 interface Props {
@@ -77,6 +78,41 @@ export function SettingsModal({ settings, completed, onChange, onReset, onClose 
             icon={<IconBulb size={22} />}
           />
         </div>
+
+        {FRIENDS_SCOUTING ? (
+          <div className="setting-row setting-segment" data-setting="friendHelp">
+            <span className="setting-icon">
+              <IconStar size={22} />
+            </span>
+            <span className="setting-copy">
+              <strong>Friend path-checking</strong>
+              <span>
+                Rescued friends can run ahead and chalk dead ends so you backtrack less.
+              </span>
+              <div className="segment-row" role="radiogroup" aria-label="Friend path-checking">
+                {(
+                  [
+                    ["auto", "They check for me"],
+                    ["manual", "I tap to send"],
+                    ["off", "Off"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    role="radio"
+                    aria-checked={settings.friendHelp === value}
+                    className={`segment-chip ${settings.friendHelp === value ? "is-on" : ""}`}
+                    data-friend-help={value}
+                    onClick={() => onChange({ friendHelp: value })}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </span>
+          </div>
+        ) : null}
 
         <div className="progress-box">
           <div className="progress-box-head">

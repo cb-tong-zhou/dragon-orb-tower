@@ -29,6 +29,8 @@ Open <http://127.0.0.1:4173/>.
 - **Tap a path right beside Sora.** He walks to the next fork, then waits for your next tap. Taps on far-away coins, orbs, or doors are ignored on purpose — you make every choice at every fork.
 - **Every floor has its own mission.** Floor 1 is a rescue with a star in the center. Floor 2 asks you to collect every Dragon Coin and count them at the door. Floor 3 hides numbered carrots in a bunny-shaped maze and asks you to crack an `A = 1` code. Floors 4–7 bring back the Dragon Radar, which reveals the hidden orb.
 - **Rescue the trapped friend and complete the mission.** The sealed door has a red X until that floor's goals are finished, then turns green.
+- **Rescued friends scout for you.** Up to three friends walk behind Sora and each can check one path per floor. By default they volunteer at forks; in Settings you can switch to tap-to-send or turn it off. A true dead end gets a chalk X so you avoid it. Friends never collect items, rescue anyone, or open doors — that is still your job.
+- **A grumblin may block a friend.** Sometimes a successful scout attracts a grumpy little grumblin on the way back. Walk to it and it runs away — no combat, no timer, nothing lost. Until every friend is free the exit door stays sealed and the Hint button points at the grumblin. Floor 1 has no grumblins, and on floors 3+ the first scout of a floor is always safe.
 - **Dragon Coins are bonus treasure on radar floors.** Three are hidden in side paths on Floors 4–7. Floor 2's twelve coins are the main counting mission, so its mission chip deliberately hides the total.
 - **Hint** draws a dotted route to the next goal: friend, then the floor's collectible or orb, then the door.
 - **Read aloud** speaks the floor story and mission.

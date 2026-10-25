@@ -1,12 +1,15 @@
 import { useId, useMemo } from "react";
-import type { Character } from "../content/characters";
+import { getCharacter, type Character } from "../content/characters";
 import type { Cell, Level } from "../generator/types";
 import { CAPSULE_RADIUS, openNeighborIds, PORTAL_OFFSET } from "../generator/generate";
+import type { GremlinToken, PartyToken, ScoutHighlight, ScoutMark } from "./mazeTypes";
 import { AvatarGlyph } from "./CharacterAvatar";
 import { DragonCarrotGlyph } from "./DragonCarrot";
 import { DragonCoinGlyph } from "./DragonCoin";
 import { DragonOrbGlyph } from "./DragonOrb";
 import { DragonRadarGlyph } from "./DragonRadar";
+import { GremlinLayer } from "./GremlinLayer";
+import { ScoutLayer } from "./ScoutLayer";;
 
 const INK = "#231A15";
 const PAPER = "#FFF6E2";
@@ -95,6 +98,11 @@ interface Props {
   moving: boolean;
   showMoves: boolean;
   onCellTap: (cellId: number) => void;
+  /** Friends walking with Sora; when present it replaces the single follower. */
+  party?: PartyToken[] | null;
+  scoutMarks?: ScoutMark[] | null;
+  scoutHighlight?: ScoutHighlight | null;
+  gremlins?: GremlinToken[] | null;
 }
 
 export function Maze({
@@ -114,6 +122,10 @@ export function Maze({
   moving,
   showMoves,
   onCellTap,
+  party = null,
+  scoutMarks = null,
+  scoutHighlight = null,
+  gremlins = null,
 }: Props) {
   const uid = useId().replace(/[:]/g, "");
   const wobbleId = `wobble-${uid}`;
@@ -209,6 +221,34 @@ export function Maze({
     if (!showMoves || moving) return [];
     return openNeighborIds(level, playerCell).map((id) => cells[id]);
   }, [showMoves, moving, level, playerCell, cells]);
+
+  const partySpots = useMemo(() => {
+    if (!party || party.length === 0) return [];
+    return party.map((member) => {
+      const cell = cells[member.cellId];
+      if (!cell) return null;
+      if (member.mode !== "follow" || cell.id !== playerCell) {
+        return { member, cell };
+      }
+      // Followers stack behind Sora along the radial line: a conga line.
+      const distance = Math.hypot(cell.cx, cell.cy);
+      const pull = 0.42 + member.slot * 0.13;
+      if (distance < 0.01) {
+        return {
+          member,
+          cell: { ...cell, cx: cell.cx + 0.28 + member.slot * 0.2, cy: cell.cy + 0.16 },
+        };
+      }
+      return {
+        member,
+        cell: {
+          ...cell,
+          cx: cell.cx - (cell.cx / distance) * pull,
+          cy: cell.cy - (cell.cy / distance) * pull,
+        },
+      };
+    });
+  }, [party, cells, playerCell]);
 
   const portalCells = level.portals
     .map((portal) => cells[portal.externalCell])
@@ -361,6 +401,15 @@ export function Maze({
           pointerEvents="none"
           className="hint-path"
           vectorEffect="non-scaling-stroke"
+        />
+      ) : null}
+
+      {scoutMarks || scoutHighlight ? (
+        <ScoutLayer
+          marks={scoutMarks ?? []}
+          highlight={scoutHighlight}
+          cells={cells}
+          accent={accent}
         />
       ) : null}
 
@@ -567,6 +616,10 @@ export function Maze({
         />
       ) : null}
 
+      {gremlins && gremlins.length > 0 ? (
+        <GremlinLayer gremlins={gremlins} cells={cells} />
+      ) : null}
+
       {moveTargets.map((cell) => (
         <circle
           key={`move-${cell.id}`}
@@ -580,7 +633,7 @@ export function Maze({
         />
       ))}
 
-      {followerSpot ? (
+      {!party && followerSpot ? (
         <g pointerEvents="none" data-follower-token data-follower-cell={followerCell ?? undefined}>
           <circle cx={followerSpot.cx} cy={followerSpot.cy} r="0.3" fill={PAPER} stroke={INK} strokeWidth="2" vectorEffect="non-scaling-stroke" />
           <g transform={`translate(${followerSpot.cx} ${followerSpot.cy}) scale(0.0056) translate(-50 -52)`}>
@@ -588,6 +641,83 @@ export function Maze({
           </g>
         </g>
       ) : null}
+
+      {partySpots.map((spot) => {
+        if (!spot) return null;
+        const character = getCharacter(spot.member.characterId);
+        const isBlocked = spot.member.mode === "blocked";
+        const isOut =
+          spot.member.mode === "scout" || spot.member.mode === "return" || isBlocked;
+        const isFirstFollower = spot.member.mode === "follow" && spot.member.slot === 0;
+
+        return (
+          <g
+            key={`party-${spot.member.characterId}`}
+            pointerEvents="none"
+            className={`party-token ${isOut ? "is-out" : ""} ${isBlocked ? "is-blocked" : ""}`}
+            data-party-member={spot.member.characterId}
+            data-party-cell={spot.member.cellId}
+            data-party-mode={spot.member.mode}
+            data-party-charge={spot.member.hasCharge}
+            {...(isFirstFollower
+              ? {
+                  "data-follower-token": true,
+                  "data-follower-cell": spot.member.cellId,
+                }
+              : {})}
+            {...(isBlocked ? { "data-blocked-friend": true } : {})}
+          >
+            {isOut ? (
+              <circle
+                cx={spot.cell.cx}
+                cy={spot.cell.cy}
+                r="0.34"
+                fill="none"
+                stroke={character.aura}
+                strokeWidth="2"
+                strokeDasharray="0.06 0.06"
+                opacity="0.8"
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : null}
+            <circle
+              cx={spot.cell.cx}
+              cy={spot.cell.cy}
+              r="0.27"
+              fill={PAPER}
+              stroke={INK}
+              strokeWidth="2"
+              vectorEffect="non-scaling-stroke"
+            />
+            <g transform={`translate(${spot.cell.cx} ${spot.cell.cy}) scale(0.0052) translate(-50 -52)`}>
+              <AvatarGlyph character={character} />
+            </g>
+            {isBlocked ? (
+              <g
+                className="party-blocked-alert"
+                transform={`translate(${spot.cell.cx + 0.3} ${spot.cell.cy - 0.36})`}
+              >
+                <circle
+                  r="0.15"
+                  fill="#FFC93C"
+                  stroke={INK}
+                  strokeWidth="1.8"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <text
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fontSize="0.19"
+                  fontWeight="900"
+                  fill={INK}
+                >
+                  !
+                </text>
+              </g>
+            ) : null}
+          </g>
+        );
+      })}
 
       {playerPosition ? (
         <g pointerEvents="none" data-player-token data-player-cell={playerCell}>

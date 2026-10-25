@@ -1,5 +1,6 @@
 import { FRIENDS } from "../content/characters";
 import { FLOORS, TOTAL_FLOORS } from "../content/floors";
+import type { CorridorEnding } from "./scouting";
 
 export type FriendHelpMode = "auto" | "manual" | "off";
 
@@ -13,6 +14,8 @@ export interface PartyMember {
   /** Cells including the starting cell. */
   scoutPath: number[];
   scoutIndex: number;
+  /** How the corridor ends, so arrival can be classified without re-walking. */
+  scoutEnding?: CorridorEnding;
   markId?: string;
   /** Gremlin id while blocked. */
   blockedBy?: string;
