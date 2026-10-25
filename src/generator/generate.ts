@@ -19,18 +19,17 @@ import type {
 } from "./types";
 
 const TWO_PI = Math.PI * 2;
-const SECTOR_PATTERN = [1, 8, 8, 16, 16, 32, 32, 32];
 const PORTAL_OFFSET = 0.02;
 const CAPSULE_RADIUS = 0.5;
 
-const EAR_WIDTH = 2.4;
-const EAR_HEIGHT = 4.8;
-const EAR_COLS = 2;
-const EAR_ROWS = 4;
-
-function sectorCount(ring: number): number {
-  return SECTOR_PATTERN[Math.min(ring, SECTOR_PATTERN.length - 1)];
-}
+// The reference bunny ears are tall, multi-lane mini-mazes rather than two
+// simple boxes. A 5x9 grid gives each ear several nested turns while still
+// leaving room for the character tokens on a phone.
+const EAR_WIDTH = 3.6;
+const EAR_HEIGHT = 9.6;
+const EAR_COLS = 5;
+const EAR_ROWS = 9;
+const EAR_CENTER_X = 3.8;
 
 function pointAt(radius: number, angle: number): [number, number] {
   return [Math.cos(angle) * radius, Math.sin(angle) * radius];
@@ -63,7 +62,7 @@ function roundedRectPath(
   ].join(" ");
 }
 
-function buildCells(rings: number): Cell[] {
+function buildCells(rings: number, sectors: number): Cell[] {
   const cells: Cell[] = [];
   cells.push({
     id: 0,
@@ -81,7 +80,6 @@ function buildCells(rings: number): Cell[] {
   });
 
   for (let ring = 1; ring < rings; ring++) {
-    const sectors = sectorCount(ring);
     for (let sector = 0; sector < sectors; sector++) {
       const a0 = (TWO_PI * sector) / sectors;
       const a1 = (TWO_PI * (sector + 1)) / sectors;
@@ -171,9 +169,47 @@ function buildEdges(cells: Cell[], rings: number): Edge[] {
   return edges;
 }
 
+function openEarSpiral(earCells: Cell[][], earEdges: Edge[]): void {
+  // A single spiral lane through the ear leaves long nested U-shaped walls
+  // between its turns, like the hand-drawn bunny ears. The lane is generated
+  // first, then only its consecutive edges are opened.
+  const order: Cell[] = [];
+  let top = 0;
+  let bottom = EAR_ROWS - 1;
+  let left = 0;
+  let right = EAR_COLS - 1;
+
+  while (top <= bottom && left <= right) {
+    for (let col = left; col <= right; col++) order.push(earCells[top][col]);
+    top++;
+    for (let row = top; row <= bottom; row++) order.push(earCells[row][right]);
+    right--;
+    if (top <= bottom) {
+      for (let col = right; col >= left; col--) order.push(earCells[bottom][col]);
+      bottom--;
+    }
+    if (left <= right) {
+      for (let row = bottom; row >= top; row--) order.push(earCells[row][left]);
+      left++;
+    }
+  }
+
+  const edgeByPair = new Map<string, Edge>();
+  for (const edge of earEdges) {
+    edgeByPair.set(`${Math.min(edge.a, edge.b)}:${Math.max(edge.a, edge.b)}`, edge);
+  }
+  for (let index = 0; index < order.length - 1; index++) {
+    const a = order[index].id;
+    const b = order[index + 1].id;
+    const edge = edgeByPair.get(`${Math.min(a, b)}:${Math.max(a, b)}`);
+    if (edge) edge.open = true;
+  }
+}
+
 /**
- * Add two playable bunny ears above the circular head. Each ear is a small
- * 2x4 rectangular maze joined to the head through a gap in the outer wall.
+ * Add two playable bunny ears above the circular head. Each ear is a tall
+ * 5x9 rectangular mini-maze joined to the head through a gap in the outer
+ * wall, matching the tall nested lanes in the hand-drawn reference.
  */
 function addEars(
   cells: Cell[],
@@ -189,7 +225,7 @@ function addEars(
   const cellHeight = EAR_HEIGHT / EAR_ROWS;
 
   for (let earIndex = 0; earIndex < 2; earIndex++) {
-    const centerX = earIndex === 0 ? -3 : 3;
+    const centerX = earIndex === 0 ? -EAR_CENTER_X : EAR_CENTER_X;
     const left = centerX - EAR_WIDTH / 2;
     const right = centerX + EAR_WIDTH / 2;
     earShapes.push(roundedRectPath(left, earTop, right, earBottom, 0.9));
@@ -220,6 +256,7 @@ function addEars(
           angle: 0,
           outline: roundedRectPath(x0 + 0.04, y0 + 0.04, x1 - 0.04, y1 - 0.04, 0.12),
           earId: earIndex,
+          earRow: row,
         };
         cells.push(cell);
         rowCells.push(cell);
@@ -227,36 +264,53 @@ function addEars(
       earCells.push(rowCells);
     }
 
-    // Internal ear walls.
+    // Build every internal edge closed first. openEarSpiral then opens one
+    // continuous spiral lane, leaving the other edges as long U-shaped walls.
+    const earEdges: Edge[] = [];
     for (let row = 0; row < EAR_ROWS; row++) {
-      const a = earCells[row][0];
-      const b = earCells[row][1];
-      const x = left + cellWidth;
-      edges.push({
-        id: `e:${earIndex}:${row}:h`,
-        a: a.id,
-        b: b.id,
-        kind: "ear",
-        open: false,
-        wall: { type: "line", x1: x, y1: a.cy - cellHeight / 2, x2: x, y2: a.cy + cellHeight / 2 },
-      });
+      for (let col = 0; col < EAR_COLS - 1; col++) {
+        const a = earCells[row][col];
+        const b = earCells[row][col + 1];
+        const x = left + (col + 1) * cellWidth;
+        const edge: Edge = {
+          id: `e:${earIndex}:${row}:${col}:h`,
+          a: a.id,
+          b: b.id,
+          kind: "ear",
+          open: false,
+          wall: {
+            type: "line",
+            x1: x,
+            y1: a.cy - cellHeight / 2,
+            x2: x,
+            y2: a.cy + cellHeight / 2,
+          },
+        };
+        edges.push(edge);
+        earEdges.push(edge);
+      }
     }
     for (let row = 0; row < EAR_ROWS - 1; row++) {
       const y = earTop + (row + 1) * cellHeight;
       for (let col = 0; col < EAR_COLS; col++) {
-        edges.push({
+        const edge: Edge = {
           id: `e:${earIndex}:${row}:${col}:v`,
           a: earCells[row][col].id,
           b: earCells[row + 1][col].id,
           kind: "ear",
           open: false,
           wall: { type: "line", x1: left + col * cellWidth, y1: y, x2: left + (col + 1) * cellWidth, y2: y },
-        });
+        };
+        edges.push(edge);
+        earEdges.push(edge);
       }
     }
+    openEarSpiral(earCells, earEdges);
 
     // One open doorway into the head, with a matching gap in the head wall.
-    const bottomCell = earCells[EAR_ROWS - 1][earIndex === 0 ? 1 : 0];
+    // Mirror the doorway columns so the two ears sit symmetrically.
+    const bottomCol = earIndex === 0 ? 1 : EAR_COLS - 2;
+    const bottomCell = earCells[EAR_ROWS - 1][bottomCol];
     const connectorAngle = Math.atan2(bottomCell.cy, bottomCell.cx);
     const outer = nearestOuterCell(cells, rings, connectorAngle);
     edges.push({
@@ -639,7 +693,14 @@ function chooseCarrotCells(level: Level, config: FloorConfig, rng: Rng): number[
     (cell) =>
       (cell.kind === "normal" || cell.kind === "ear") &&
       !blocked.has(cell.id) &&
-      distances[cell.id] >= 2,
+      distances[cell.id] >= 2 &&
+      // Keep carrots out of the rounded ear rim and the bottom row tucked
+      // under the head, where a token would sit on top of the border.
+      (cell.kind !== "ear" ||
+        ((cell.earRow ?? EAR_ROWS - 1) < EAR_ROWS - 1 &&
+          (cell.earRow ?? 0) > 0 &&
+          cell.sector > 0 &&
+          cell.sector < EAR_COLS - 1)),
   );
 
   const pickFrom = (pool: Cell[]): Cell => {
@@ -788,24 +849,27 @@ function generateAttempt(
       : `${config.seed}:replay-${variant}:${attempt}`;
   const rng = makeRng(seed, "maze");
   const rings = config.rings;
-  const cells = buildCells(rings);
+  const sectors = config.sectors ?? 24;
+  const cells = buildCells(rings, sectors);
   const edges = buildEdges(cells, rings);
+
+  const startOuter = nearestOuterCell(cells, rings, Math.PI);
+  carve(cells, edges, startOuter.id, rng, config.newestChance ?? 0.8);
+  const braidCount = braidMaze(cells, edges, config.braid, rng);
 
   let extraTop = 0;
   let headWallGaps: HeadWallGap[] = [];
   let earShapes: string[] = [];
   let earInnerShapes: string[] = [];
   if (config.bunny) {
+    // Ears are appended after the head is carved: their long U-lanes are a
+    // hand-authored template, not random cell-by-cell carving.
     const ears = addEars(cells, edges, rings);
     extraTop = ears.extraTop;
     headWallGaps = ears.headWallGaps;
     earShapes = ears.earShapes;
     earInnerShapes = ears.earInnerShapes;
   }
-
-  const startOuter = nearestOuterCell(cells, rings, Math.PI);
-  carve(cells, edges, startOuter.id, rng, config.newestChance ?? 0.8);
-  const braidCount = braidMaze(cells, edges, config.braid, rng);
 
   const withPortals = addPortals(cells, edges, rings, rng, config);
   const level: Level = {

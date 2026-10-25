@@ -1,9 +1,11 @@
 import { chromium } from "playwright";
+import { mkdirSync } from "node:fs";
 
 const BASE = process.env.E2E_BASE ?? "http://127.0.0.1:5173/";
 const KEY = "dragon-orb-tower-save-v1";
 const KEY2 = "dragon-orb-tower-save-v2";
-const outDir = "screenshots";
+const outDir = "screenshots/e2e";
+mkdirSync(outDir, { recursive: true });
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 const errors = [];
 
@@ -406,22 +408,27 @@ function findDeadEndBranch(minPathLength = 2) {
   await page.waitForTimeout(250);
   await page.screenshot({ path: `${outDir}/13-floor1-friend-rescued.png` });
 
-  // The route to Mira may legitimately pass through the center and collect
-  // the orb early, so only assert the pre-orb state when that did not happen.
-  const orbCollectedEarly = await chipDone(page, "orb");
-  if (!orbCollectedEarly) {
+  // A dense layout may route the walk to Mira straight through the centre, so
+  // accept the orb being collected on the way to the rescue.
+  const orbOnRoute = (await page.locator("[data-orb-token]").count()) === 0;
+  if (orbOnRoute) {
+    if (!(await chipDone(page, "orb"))) throw new Error("Floor 1 orb token vanished without being collected");
+    if (!/Door open/i.test(await page.locator('[data-mission="door"]').innerText())) {
+      throw new Error("Floor 1 door did not open after the center orb was collected");
+    }
+  } else {
     if ((await page.locator("[data-orb-token]").count()) !== 1) {
       throw new Error("Floor 1 center orb disappeared before collection");
     }
     if (!/Door sealed/i.test(await page.locator('[data-mission="door"]').innerText())) {
       throw new Error("Floor 1 door opened before the center orb was collected");
     }
-  }
 
-  await walkTo(page, level.orbCell);
-  if (!(await chipDone(page, "orb"))) throw new Error("Floor 1 center orb was not collected");
-  if (!/Door open/i.test(await page.locator('[data-mission="door"]').innerText())) {
-    throw new Error("Floor 1 door did not open after rescue and center orb");
+    await walkTo(page, level.orbCell);
+    if (!(await chipDone(page, "orb"))) throw new Error("Floor 1 center orb was not collected");
+    if (!/Door open/i.test(await page.locator('[data-mission="door"]').innerText())) {
+      throw new Error("Floor 1 door did not open after rescue and center orb");
+    }
   }
 
   await walkTo(page, level.exitCell);
@@ -452,7 +459,7 @@ function findDeadEndBranch(minPathLength = 2) {
     metrics: level.metrics,
   });
   if (level.mission !== "coins") throw new Error("Floor 2 is not a coin-counting mission");
-  if (level.coinCells.length !== 8) throw new Error("Floor 2 should have 8 Dragon Coins");
+  if (level.coinCells.length !== 12) throw new Error("Floor 2 should have 12 Dragon Coins");
   if ((await page.locator("[data-radar-token]").count()) !== 0) {
     throw new Error("Floor 2 should not show a radar");
   }
@@ -497,7 +504,7 @@ function findDeadEndBranch(minPathLength = 2) {
   await page.waitForTimeout(500);
   const bonusText = await page.locator(".complete-bonus").innerText();
   console.log("floor 2 completion bonus", bonusText);
-  if (!/You counted 8 Dragon Coins/i.test(bonusText)) {
+  if (!/You counted 12 Dragon Coins/i.test(bonusText)) {
     throw new Error("Floor 2 completion did not record the coin count");
   }
   await page.screenshot({ path: `${outDir}/18-floor2-complete.png` });

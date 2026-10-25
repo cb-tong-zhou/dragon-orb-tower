@@ -70,7 +70,10 @@ function expectPlayable(level: Level, config: FloorConfig) {
     expect(new Set(carrotEars.map((cell) => cell.earId)).size).toBe(2);
     expect(headCarrots.length).toBeGreaterThanOrEqual(1);
     for (const cellId of level.carrotCells) {
-      expect(["normal", "ear"]).toContain(level.cells[cellId]?.kind);
+      const cell = level.cells[cellId];
+      expect(["normal", "ear"]).toContain(cell?.kind);
+      // Keep ear carrots out of the bottom row tucked under the head.
+      if (cell?.kind === "ear") expect(cell.earRow).toBeLessThan(8);
       expect(bfsPath(level, level.startCell, cellId).length).toBeGreaterThan(1);
     }
   }
@@ -90,6 +93,78 @@ function expectPlayable(level: Level, config: FloorConfig) {
       expect(bfsPath(level, level.startCell, cellId).length).toBeGreaterThan(1);
     }
   }
+}
+
+const TWO_PI = Math.PI * 2;
+const WALL_EPS = 1e-6;
+
+interface WallRun {
+  start: number;
+  end: number;
+}
+
+function mergeWallRuns(runs: WallRun[]): WallRun[] {
+  const sorted = [...runs].sort((a, b) => a.start - b.start);
+  const merged: WallRun[] = sorted.length > 0 ? [{ ...sorted[0] }] : [];
+  for (const run of sorted.slice(1)) {
+    const current = merged[merged.length - 1];
+    if (run.start <= current.end + WALL_EPS) current.end = Math.max(current.end, run.end);
+    else merged.push({ ...run });
+  }
+  return merged;
+}
+
+function arcRunLengths(level: Level): number[] {
+  const byRadius = new Map<number, WallRun[]>();
+  for (const edge of level.edges) {
+    if (edge.open || edge.wall.type !== "arc") continue;
+    const runs = byRadius.get(edge.wall.radius) ?? [];
+    runs.push({ start: edge.wall.a0, end: edge.wall.a1 });
+    byRadius.set(edge.wall.radius, runs);
+  }
+  return [...byRadius.entries()].flatMap(([radius, runs]) =>
+    mergeWallRuns(runs).map((run) => (run.end - run.start) * radius),
+  );
+}
+
+function radialRunLengths(level: Level): number[] {
+  const byAngle = new Map<string, WallRun[]>();
+  for (const edge of level.edges) {
+    if (edge.open || edge.wall.type !== "line") continue;
+    const angle = Math.atan2(edge.wall.y1, edge.wall.x1);
+    const r1 = Math.hypot(edge.wall.x1, edge.wall.y1);
+    const r2 = Math.hypot(edge.wall.x2, edge.wall.y2);
+    if (r1 < WALL_EPS || r2 < WALL_EPS) continue;
+    const wrapped = ((angle % TWO_PI) + TWO_PI) % TWO_PI;
+    const key = wrapped.toFixed(6);
+    const runs = byAngle.get(key) ?? [];
+    runs.push({ start: Math.min(r1, r2), end: Math.max(r1, r2) });
+    byAngle.set(key, runs);
+  }
+  return [...byAngle.values()].flatMap((runs) =>
+    mergeWallRuns(runs).map((run) => run.end - run.start),
+  );
+}
+
+function straightRunLengths(level: Level): number[] {
+  const byLine = new Map<string, WallRun[]>();
+  for (const edge of level.edges) {
+    if (edge.open || edge.wall.type !== "line") continue;
+    const horizontal = Math.abs(edge.wall.y1 - edge.wall.y2) < WALL_EPS;
+    const vertical = Math.abs(edge.wall.x1 - edge.wall.x2) < WALL_EPS;
+    if (!horizontal && !vertical) continue;
+    const coord = horizontal ? edge.wall.y1 : edge.wall.x1;
+    const key = `${horizontal ? "h" : "v"}:${coord.toFixed(6)}`;
+    const runs = byLine.get(key) ?? [];
+    runs.push({
+      start: horizontal ? Math.min(edge.wall.x1, edge.wall.x2) : Math.min(edge.wall.y1, edge.wall.y2),
+      end: horizontal ? Math.max(edge.wall.x1, edge.wall.x2) : Math.max(edge.wall.y1, edge.wall.y2),
+    });
+    byLine.set(key, runs);
+  }
+  return [...byLine.values()].flatMap((runs) =>
+    mergeWallRuns(runs).map((run) => run.end - run.start),
+  );
 }
 
 describe("campaign floors", () => {
@@ -161,11 +236,42 @@ describe("campaign floors", () => {
 
   it("keeps the first three floors as a clear difficulty ladder", () => {
     const [first, second, third] = FLOORS.slice(0, 3).map((story) => generateFloor(story.config));
-    expect(first.rings).toBe(9);
-    expect(second.rings).toBeGreaterThan(first.rings);
+    expect(first.rings).toBe(10);
+    expect(second.rings).toBeGreaterThanOrEqual(15);
     expect(third.earShapes).toHaveLength(2);
+    expect(first.cells.length).toBeGreaterThan(140);
+    expect(second.cells.length).toBeGreaterThan(330);
+    expect(third.cells.length).toBeGreaterThan(210);
+    expect(third.cells.filter((cell) => cell.kind === "ear").length).toBeGreaterThanOrEqual(70);
+    expect(third.edges.filter((edge) => edge.kind === "ear" && !edge.open).length).toBeGreaterThan(40);
     expect(first.mission).toBe("rescue");
     expect(second.mission).toBe("coins");
+    expect(second.coinCells).toHaveLength(12);
     expect(third.mission).toBe("code");
+  });
+
+  it("uses one sector count per floor so arcs and radial walls can run long", () => {
+    const [first, second, third] = FLOORS.slice(0, 3).map((story) => generateFloor(story.config));
+    for (const level of [first, second, third]) {
+      const sectorCounts = new Set(
+        level.cells.filter((cell) => cell.kind === "normal").map((cell) => cell.sectors),
+      );
+      expect(sectorCounts.size).toBe(1);
+    }
+    expect(first.cells.find((cell) => cell.kind === "normal")?.sectors).toBe(16);
+    expect(second.cells.find((cell) => cell.kind === "normal")?.sectors).toBe(24);
+    expect(third.cells.find((cell) => cell.kind === "normal")?.sectors).toBe(16);
+  });
+
+  it("keeps long continuous wall runs like the hand-drawn reference maps", () => {
+    const [first, second, third] = FLOORS.slice(0, 3).map((story) => generateFloor(story.config));
+
+    expect(Math.max(...arcRunLengths(first))).toBeGreaterThan(12);
+    expect(Math.max(...radialRunLengths(first))).toBeGreaterThan(4);
+    expect(Math.max(...arcRunLengths(second))).toBeGreaterThan(14);
+    expect(Math.max(...radialRunLengths(second))).toBeGreaterThan(4);
+    expect(Math.max(...arcRunLengths(third))).toBeGreaterThan(10);
+    expect(Math.max(...radialRunLengths(third))).toBeGreaterThan(2);
+    expect(Math.max(...straightRunLengths(third))).toBeGreaterThan(5);
   });
 });

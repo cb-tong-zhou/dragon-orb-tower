@@ -37,7 +37,7 @@ async function walkTo(page, target) {
     (cell) =>
       Number(document.querySelector("[data-player-token]")?.getAttribute("data-player-cell")) === cell,
     target,
-    { timeout: 25000 },
+    { timeout: 60000 },
   );
 }
 
@@ -104,6 +104,7 @@ await page.waitForFunction(
   { timeout: 10000 },
 );
 console.log("floor 1 center orb collected");
+await page.waitForTimeout(350);
 
 await walkTo(page, floor1.exitCell);
 await page.waitForSelector(".complete-card", { timeout: 15000 });
@@ -129,7 +130,7 @@ console.log("floor 2", {
   metrics: floor2.metrics,
 });
 if (floor2.mission !== "coins") throw new Error("Floor 2 is not a coin-counting mission");
-if (floor2.coinCells.length !== 8) throw new Error("Floor 2 should have 8 coins");
+if (floor2.coinCells.length !== 12) throw new Error("Floor 2 should have 12 coins");
 const coinChip = await page.locator('[data-mission="coins"]').innerText();
 if (/\d+\s*\/\s*\d+/.test(coinChip)) throw new Error("Floor 2 coin chip reveals the count");
 
@@ -139,8 +140,17 @@ await page.waitForFunction(
   null,
   { timeout: 10000 },
 );
+let checkedCoinToast = false;
 for (const coin of floor2.coinCells) {
   await walkTo(page, coin);
+  if (!checkedCoinToast) {
+    const toastText = await page.locator(".toast").innerText();
+    console.log("floor 2 coin toast", toastText);
+    if (/12/.test(toastText)) {
+      throw new Error("Floor 2 coin toast revealed the total before the count question");
+    }
+    checkedCoinToast = true;
+  }
 }
 await page.waitForFunction(
   () => document.querySelector('[data-mission="coins"]')?.classList.contains("is-done"),

@@ -48,7 +48,7 @@ await page.waitForSelector(".home-screen");
 const offlineTitle = await page.locator(".game-logo").innerText();
 const offlineStart = await page.getByRole("button", { name: /Start adventure/i }).innerText();
 console.log("offline home", { title: offlineTitle.replace(/\n/g, " "), start: offlineStart });
-await page.screenshot({ path: "screenshots/25-pwa-offline.png" });
+await page.screenshot({ path: "screenshots/26-pwa-offline.png" });
 
 await page.getByRole("button", { name: /Start adventure/i }).click();
 await page.locator(".floor-card.available").first().click();
@@ -58,7 +58,7 @@ console.log("offline playable", {
   title: await page.locator(".play-heading h1").innerText(),
   cells: await page.locator("[data-cell-id]").count(),
 });
-await page.screenshot({ path: "screenshots/26-pwa-offline-play.png" });
+await page.screenshot({ path: "screenshots/27-pwa-offline-play.png" });
 
 console.log("ERRORS", JSON.stringify(errors, null, 2));
 if (errors.length) process.exitCode = 1;
