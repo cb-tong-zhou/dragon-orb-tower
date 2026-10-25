@@ -1,0 +1,843 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import confetti from "canvas-confetti";
+import { floorStory, TOTAL_FLOORS } from "../content/floors";
+import { getCharacter, SORA } from "../content/characters";
+import { bfsPath, corridorPath } from "../generator/graph";
+import { generateFloor } from "../generator/generate";
+import type { Level } from "../generator/types";
+import type { Settings } from "../game/storage";
+import {
+  initAudio,
+  playCoin,
+  playError,
+  playOrb,
+  playPage,
+  playRadar,
+  playRescue,
+  playStep,
+  playTap,
+  playWin,
+  speak,
+  stopSpeaking,
+} from "../game/audio";
+import { CharacterAvatar } from "../components/CharacterAvatar";
+import { DragonCarrotGlyph } from "../components/DragonCarrot";
+import { DragonCoinGlyph } from "../components/DragonCoin";
+import { DragonOrb } from "../components/DragonOrb";
+import { DragonRadarGlyph } from "../components/DragonRadar";
+import { Maze } from "../components/Maze";
+import {
+  IconBack,
+  IconBulb,
+  IconCheck,
+  IconCollapse,
+  IconExpand,
+  IconLock,
+  IconSound,
+  IconSpeaker,
+  IconStar,
+} from "../components/Icons";
+
+interface Props {
+  floor: number;
+  runSeed: string;
+  completed: number;
+  settings: Settings;
+  seenTutorial: boolean;
+  onBack: () => void;
+  onComplete: (floor: number) => void;
+  onNext: (floor: number) => void;
+  onFinale: () => void;
+  onTutorialSeen: () => void;
+  onSettingsChange: (patch: Partial<Settings>) => void;
+}
+
+interface Toast {
+  id: number;
+  text: string;
+}
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+
+function fireConfetti() {
+  if (typeof window === "undefined") return;
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const colors = ["#FF7A1A", "#FFC93C", "#2C7DA0", "#B9E769", "#E8482D", "#FFF4DC"];
+  confetti({
+    particleCount: 90,
+    spread: 72,
+    origin: { y: 0.68 },
+    colors,
+    scalar: 0.9,
+  });
+  window.setTimeout(() => {
+    confetti({
+      particleCount: 55,
+      angle: 120,
+      spread: 60,
+      origin: { x: 0.1, y: 0.72 },
+      colors,
+      scalar: 0.8,
+    });
+    confetti({
+      particleCount: 55,
+      angle: 60,
+      spread: 60,
+      origin: { x: 0.9, y: 0.72 },
+      colors,
+      scalar: 0.8,
+    });
+  }, 180);
+}
+
+export function PlayScreen({
+  floor,
+  runSeed,
+  completed,
+  settings,
+  seenTutorial,
+  onBack,
+  onComplete,
+  onNext,
+  onFinale,
+  onTutorialSeen,
+  onSettingsChange,
+}: Props) {
+  const story = floorStory(floor);
+  const config = story.config;
+  const friend = getCharacter(config.friendId);
+  const level = useMemo<Level>(() => generateFloor(config, 0, runSeed), [config, runSeed]);
+
+  const [playerCell, setPlayerCell] = useState(level.startCell);
+  const [followerCell, setFollowerCell] = useState<number | null>(null);
+  const [friendRescued, setFriendRescued] = useState(false);
+  const [radarCollected, setRadarCollected] = useState(level.radarCell < 0);
+  const [orbCollected, setOrbCollected] = useState(level.orbCell < 0);
+  const [coinsCollected, setCoinsCollected] = useState<number[]>([]);
+  const [carrotsCollected, setCarrotsCollected] = useState<number[]>([]);
+  const [moving, setMoving] = useState(false);
+  const [hintPath, setHintPath] = useState<number[]>([]);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const [introOpen, setIntroOpen] = useState(true);
+  const [showComplete, setShowComplete] = useState(false);
+  const [bigMaze, setBigMaze] = useState(false);
+  const [lockOpen, setLockOpen] = useState(false);
+  const [lockError, setLockError] = useState("");
+
+  const playerRef = useRef(level.startCell);
+  const movingRef = useRef(false);
+  const friendRescuedRef = useRef(false);
+  const radarCollectedRef = useRef(level.radarCell < 0);
+  const orbCollectedRef = useRef(level.orbCell < 0);
+  const coinsCollectedRef = useRef<number[]>([]);
+  const carrotsCollectedRef = useRef<number[]>([]);
+  const lockOpenRef = useRef(false);
+  const completedRef = useRef(false);
+  const aliveRef = useRef(true);
+  const runIdRef = useRef(0);
+
+  const showToast = useCallback((text: string) => {
+    setToast({ id: Date.now() + Math.random(), text });
+  }, []);
+
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      (window as unknown as { __dragonTowerLevel?: Level }).__dragonTowerLevel = level;
+      console.debug("[Dragon Orb Tower] level", level.metrics);
+    }
+  }, [level]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 2800);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
+    if (hintPath.length === 0) return;
+    const timer = window.setTimeout(() => setHintPath([]), 6500);
+    return () => window.clearTimeout(timer);
+  }, [hintPath]);
+
+  useEffect(() => {
+    if (!bigMaze) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setBigMaze(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [bigMaze]);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      runIdRef.current += 1;
+      stopSpeaking();
+    };
+  }, []);
+
+  const closeLock = useCallback(() => {
+    lockOpenRef.current = false;
+    setLockOpen(false);
+    setLockError("");
+  }, []);
+
+  const finishFloor = useCallback(() => {
+    if (completedRef.current) return;
+    completedRef.current = true;
+    lockOpenRef.current = false;
+    movingRef.current = false;
+    setMoving(false);
+    setLockOpen(false);
+    setShowComplete(true);
+    onComplete(floor);
+    playWin();
+    fireConfetti();
+  }, [floor, onComplete]);
+
+  const allCoins = level.coinCells.length > 0 && coinsCollected.length === level.coinCells.length;
+  const allCarrots = level.carrotCells.length > 0 && carrotsCollected.length === level.carrotCells.length;
+  const doorReady =
+    friendRescued &&
+    (level.mission === "rescue"
+      ? orbCollected
+      : level.mission === "coins"
+        ? allCoins
+        : level.mission === "code"
+          ? allCarrots
+          : radarCollected && orbCollected);
+
+  useEffect(() => {
+    if (introOpen || showComplete || lockOpenRef.current) return;
+    const cellId = playerCell;
+
+    if (cellId === level.friendCell && !friendRescuedRef.current) {
+      friendRescuedRef.current = true;
+      setFriendRescued(true);
+      setFollowerCell(cellId);
+      playRescue();
+      showToast(`${friend.name} is safe!`);
+      if (settings.voice) speak(friend.greeting, true);
+    }
+
+    if (cellId === level.radarCell && !radarCollectedRef.current) {
+      radarCollectedRef.current = true;
+      setRadarCollected(true);
+      playRadar();
+      showToast("Dragon Radar found! The orb is now on the map.");
+    }
+
+    if (
+      level.orbCell >= 0 &&
+      cellId === level.orbCell &&
+      !orbCollectedRef.current &&
+      radarCollectedRef.current
+    ) {
+      orbCollectedRef.current = true;
+      setOrbCollected(true);
+      playOrb();
+      showToast(`${level.orbStars}-star Dragon Orb found!`);
+    }
+
+    if (level.coinCells.includes(cellId) && !coinsCollectedRef.current.includes(cellId)) {
+      const nextCoins = [...coinsCollectedRef.current, cellId];
+      coinsCollectedRef.current = nextCoins;
+      setCoinsCollected(nextCoins);
+      playCoin();
+      showToast(
+        nextCoins.length === level.coinCells.length
+          ? "All Dragon Coins found! Head to the door."
+          : `Dragon Coin ${nextCoins.length} of ${level.coinCells.length}!`,
+      );
+    }
+
+    if (level.carrotCells.includes(cellId) && !carrotsCollectedRef.current.includes(cellId)) {
+      const nextCarrots = [...carrotsCollectedRef.current, cellId];
+      carrotsCollectedRef.current = nextCarrots;
+      setCarrotsCollected(nextCarrots);
+      playCoin();
+      const number = level.carrotNumbers[level.carrotCells.indexOf(cellId)];
+      showToast(
+        nextCarrots.length === level.carrotCells.length
+          ? "All numbered carrots found! Head to the door."
+          : `Carrot ${nextCarrots.length} of ${level.carrotCells.length}: number ${number}`,
+      );
+    }
+
+    if (cellId === level.exitCell) {
+      if (!doorReady) {
+        playError();
+        const missing = !friendRescuedRef.current
+          ? `Find ${friend.name} first`
+          : level.mission === "rescue"
+            ? "Reach the center Dragon Orb first"
+            : level.mission === "coins"
+              ? "Collect every Dragon Coin first"
+              : level.mission === "code"
+                ? "Collect all three numbered carrots first"
+                : !radarCollectedRef.current
+                  ? "Find the Dragon Radar first"
+                  : `Find the ${level.orbStars}-star orb first`;
+        showToast(`The door is sealed. ${missing}!`);
+      } else if (level.mission === "coins" || level.mission === "code") {
+        lockOpenRef.current = true;
+        setLockError("");
+        setLockOpen(true);
+      } else {
+        finishFloor();
+      }
+    }
+  }, [
+    playerCell,
+    introOpen,
+    showComplete,
+    level,
+    friend,
+    settings.voice,
+    showToast,
+    finishFloor,
+    doorReady,
+  ]);
+
+  const missionBrief =
+    level.mission === "rescue"
+      ? `Rescue ${friend.name} and reach the ${level.orbStars}-star Dragon Orb in the centre.`
+      : level.mission === "coins"
+        ? `Rescue ${friend.name}, collect every Dragon Coin, then answer the counting question at the door.`
+        : level.mission === "code"
+          ? `Rescue ${friend.name}, collect the three numbered carrots, then crack the A equals 1 code at the door.`
+          : `Find the Dragon Radar to reveal the ${level.orbStars}-star Dragon Orb, rescue ${friend.name}, and reach the door.`;
+
+  const missionFooter =
+    level.mission === "rescue"
+      ? `Rescue ${friend.name}, then reach the ${level.orbStars}-star orb in the centre.`
+      : level.mission === "coins"
+        ? `Rescue ${friend.name}, collect every Dragon Coin, then count them at the door.`
+        : level.mission === "code"
+          ? `Rescue ${friend.name}, collect all three numbered carrots, then crack the A = 1 code at the door.`
+          : `Rescue ${friend.name}, find the Dragon Radar, then use it to find the ${level.orbStars}-star orb.`;
+
+  const startFloor = () => {
+    setIntroOpen(false);
+    onTutorialSeen();
+    initAudio();
+    playPage();
+    if (settings.voice) speak(`${story.intro} ${missionBrief}`, true);
+  };
+
+  const readMission = () => {
+    initAudio();
+    playPage();
+    const orbClue =
+      level.mission === "radar" && !radarCollected
+        ? "The orb stays hidden until you find the Dragon Radar."
+        : story.orbHint;
+    speak(`${story.intro} ${missionBrief} ${orbClue}`, true);
+  };
+
+  const nearestUncollected = (cellIds: number[], collected: number[]): number => {
+    const remaining = cellIds.filter((id) => !collected.includes(id));
+    if (remaining.length === 0) return level.exitCell;
+    return remaining.sort(
+      (a, b) =>
+        bfsPath(level, playerRef.current, a).length -
+        bfsPath(level, playerRef.current, b).length,
+    )[0];
+  };
+
+  const handleHint = () => {
+    if (introOpen || showComplete || lockOpenRef.current || movingRef.current) return;
+    initAudio();
+    playPage();
+    const target = !friendRescuedRef.current
+      ? level.friendCell
+      : level.mission === "rescue"
+        ? !orbCollectedRef.current
+          ? level.orbCell
+          : level.exitCell
+        : level.mission === "coins"
+          ? allCoins
+            ? level.exitCell
+            : nearestUncollected(level.coinCells, coinsCollectedRef.current)
+          : level.mission === "code"
+            ? allCarrots
+              ? level.exitCell
+              : nearestUncollected(level.carrotCells, carrotsCollectedRef.current)
+            : !radarCollectedRef.current
+              ? level.radarCell
+              : !orbCollectedRef.current
+                ? level.orbCell
+                : level.exitCell;
+    const path = bfsPath(level, playerRef.current, target);
+    setHintPath(path);
+    if (path.length <= 1) {
+      showToast("You are already there!");
+      return;
+    }
+    const label = !friendRescuedRef.current
+      ? friend.name
+      : level.mission === "rescue"
+        ? !orbCollectedRef.current
+          ? "the centre orb"
+          : "the open door"
+        : level.mission === "coins"
+          ? allCoins
+            ? "the counting door"
+            : "the next Dragon Coin"
+          : level.mission === "code"
+            ? allCarrots
+              ? "the code door"
+              : "the next numbered carrot"
+            : !radarCollectedRef.current
+              ? "the Dragon Radar"
+              : !orbCollectedRef.current
+                ? `the ${level.orbStars}-star orb`
+                : "the open door";
+    showToast(`Follow the dots to ${label}.`);
+  };
+
+  const handleCellTap = (cellId: number) => {
+    if (introOpen || showComplete || lockOpenRef.current || movingRef.current) return;
+    if (cellId === playerRef.current) return;
+    const fullPath = bfsPath(level, playerRef.current, cellId);
+    if (fullPath.length < 2) return;
+    const walk = settings.easyWalk ? fullPath : corridorPath(level, fullPath);
+    if (walk.length < 2) return;
+
+    initAudio();
+    playTap();
+    setHintPath([]);
+    setToast(null);
+    setMoving(true);
+    movingRef.current = true;
+    const runId = ++runIdRef.current;
+
+    const animate = async () => {
+      for (let index = 1; index < walk.length; index++) {
+        await wait(settings.easyWalk ? 78 : 112);
+        if (!aliveRef.current || runIdRef.current !== runId) return;
+        const previous = playerRef.current;
+        const next = walk[index];
+        if (friendRescuedRef.current) setFollowerCell(previous);
+        playerRef.current = next;
+        setPlayerCell(next);
+        if (index % 2 === 0) playStep();
+      }
+      if (aliveRef.current && runIdRef.current === runId) {
+        movingRef.current = false;
+        setMoving(false);
+      }
+    };
+    void animate();
+  };
+
+  const answerCount = (value: number) => {
+    initAudio();
+    playTap();
+    if (value === level.coinCells.length) {
+      closeLock();
+      finishFloor();
+    } else {
+      playError();
+      setLockError("Not quite. Count the Dragon Coins again!");
+    }
+  };
+
+  const answerCode = (value: string) => {
+    initAudio();
+    playTap();
+    if (value === level.codeWord) {
+      closeLock();
+      finishFloor();
+    } else {
+      playError();
+      setLockError("Not quite. Check the numbers with A = 1 and try again!");
+    }
+  };
+
+  const toggleSound = () => {
+    initAudio();
+    onSettingsChange({ sound: !settings.sound });
+    playPage();
+  };
+
+  const nextFloor = () => {
+    if (floor >= TOTAL_FLOORS) {
+      onFinale();
+    } else {
+      onNext(floor + 1);
+    }
+  };
+
+  const orbsFound = Math.max(completed, floor);
+  const completeTitle =
+    floor === TOTAL_FLOORS
+      ? "The seventh orb is yours!"
+      : level.mission === "coins"
+        ? "Coins counted!"
+        : level.mission === "code"
+          ? "Code cracked!"
+          : level.mission === "rescue"
+            ? "Center star found!"
+            : "Dragon Orb found!";
+
+  return (
+    <div className={`screen play-screen ${bigMaze ? "is-big-maze" : ""}`}>
+      <header className="play-top">
+        <button className="icon-btn" aria-label="Back to the tower" onClick={onBack}>
+          <IconBack />
+        </button>
+        <div className="play-heading">
+          <span className="eyebrow">Floor {floor} of {TOTAL_FLOORS}</span>
+          <h1>{config.title}</h1>
+        </div>
+        <button
+          className="icon-btn"
+          aria-label={settings.sound ? "Mute sound" : "Turn sound on"}
+          onClick={toggleSound}
+        >
+          <IconSound muted={!settings.sound} />
+        </button>
+      </header>
+
+      <div className="mission-bar">
+        <div className={`mission-chip ${friendRescued ? "is-done" : ""}`} data-mission="friend">
+          <CharacterAvatar character={friend} size={36} />
+          <span>{friend.name}</span>
+          {friendRescued ? <IconCheck size={16} /> : null}
+        </div>
+
+        {level.mission === "radar" ? (
+          <div className={`mission-chip ${radarCollected ? "is-done" : ""}`} data-mission="radar">
+            <DragonRadarGlyph size={30} active={!radarCollected} />
+            <span>Radar</span>
+            {radarCollected ? <IconCheck size={16} /> : null}
+          </div>
+        ) : null}
+
+        {level.orbCell >= 0 ? (
+          <div
+            className={`mission-chip ${orbCollected ? "is-done" : ""} ${level.mission === "radar" && !radarCollected ? "is-locked" : ""}`}
+            data-mission="orb"
+          >
+            <DragonOrb stars={level.orbStars} size={34} glow={false} />
+            <span>{level.mission === "rescue" ? "Center Orb" : `${level.orbStars}-Star Orb`}</span>
+            {orbCollected ? <IconCheck size={16} /> : null}
+          </div>
+        ) : null}
+
+        {level.coinCells.length > 0 ? (
+          <div
+            className={`mission-chip coin-chip ${allCoins ? "is-done" : ""}`}
+            data-mission="coins"
+            aria-label={
+              level.mission === "coins"
+                ? `Dragon Coins collected: ${coinsCollected.length}`
+                : `Optional Dragon Coins: ${coinsCollected.length} of ${level.coinCells.length} collected`
+            }
+          >
+            <DragonCoinGlyph size={27} />
+            <span>{level.mission === "coins" ? "Coins" : `${coinsCollected.length}/${level.coinCells.length}`}</span>
+            {level.mission === "coins" && allCoins ? <IconCheck size={16} /> : null}
+          </div>
+        ) : null}
+
+        {level.mission === "code" ? (
+          <div className={`mission-chip carrot-chip ${allCarrots ? "is-done" : ""}`} data-mission="carrots">
+            <DragonCarrotGlyph size={28} />
+            <span>{carrotsCollected.length}/{level.carrotCells.length}</span>
+            {allCarrots ? <IconCheck size={16} /> : null}
+          </div>
+        ) : null}
+
+        <div className={`mission-chip door-chip ${doorReady ? "is-done" : ""}`} data-mission="door">
+          {doorReady ? <IconStar size={18} /> : <IconLock size={18} />}
+          <span>{doorReady ? "Door open" : "Door sealed"}</span>
+        </div>
+        <button className="hint-btn" onClick={handleHint}>
+          <IconBulb size={20} />
+          <span>Hint</span>
+        </button>
+      </div>
+
+      <main className="maze-stage">
+        <button
+          type="button"
+          className="maze-size-btn"
+          aria-pressed={bigMaze}
+          aria-label={bigMaze ? "Exit big maze" : "Make the maze fill the screen"}
+          onClick={() => setBigMaze((value) => !value)}
+        >
+          {bigMaze ? <IconCollapse size={18} /> : <IconExpand size={18} />}
+          <span>{bigMaze ? "Exit big maze" : "Big maze"}</span>
+        </button>
+        <div className="maze-board">
+          <Maze
+            level={level}
+            playerCell={playerCell}
+            followerCell={followerCell}
+            friend={friend}
+            player={SORA}
+            accent={story.accent}
+            friendRescued={friendRescued}
+            radarCollected={radarCollected}
+            orbCollected={orbCollected}
+            coinsCollected={coinsCollected}
+            carrotsCollected={carrotsCollected}
+            doorReady={doorReady}
+            hintPath={hintPath}
+            moving={moving}
+            showMoves={!moving && !introOpen && !showComplete && !lockOpen}
+            onCellTap={handleCellTap}
+          />
+        </div>
+        {toast ? (
+          <div className="toast" role="status" aria-live="polite" key={toast.id}>
+            {toast.text}
+          </div>
+        ) : null}
+      </main>
+
+      <footer className="play-footer">
+        <p>{missionFooter}</p>
+        <button className="read-btn" onClick={readMission}>
+          <IconSpeaker size={18} />
+          Read aloud
+        </button>
+      </footer>
+
+      {introOpen ? (
+        <div className="modal-backdrop">
+          <div className="modal-card intro-card" role="dialog" aria-modal="true" aria-labelledby="floor-intro-title">
+            <span className="eyebrow">Floor {floor} of {TOTAL_FLOORS}</span>
+            <h2 id="floor-intro-title">{config.title}</h2>
+            <div className="intro-friend">
+              <CharacterAvatar character={friend} size={112} aura />
+              <div>
+                <span className="intro-name">{friend.name}</span>
+                <span className="intro-role">{friend.role}</span>
+              </div>
+            </div>
+            <p className="intro-copy">{story.intro}</p>
+            <div className="mission-list">
+              <div className="mission-list-item">
+                <CharacterAvatar character={friend} size={28} />
+                <span>Rescue {friend.name}</span>
+              </div>
+              {level.mission === "rescue" ? (
+                <>
+                  <div className="mission-list-item">
+                    <DragonOrb stars={level.orbStars} size={28} glow={false} />
+                    <span>Reach the {level.orbStars}-star orb in the center</span>
+                  </div>
+                  <div className="mission-list-item">
+                    <IconLock size={20} />
+                    <span>Open the door together</span>
+                  </div>
+                </>
+              ) : null}
+              {level.mission === "coins" ? (
+                <>
+                  <div className="mission-list-item">
+                    <DragonCoinGlyph size={26} />
+                    <span>Collect every Dragon Coin</span>
+                  </div>
+                  <div className="mission-list-item">
+                    <IconLock size={20} />
+                    <span>Count the coins at the door</span>
+                  </div>
+                </>
+              ) : null}
+              {level.mission === "code" ? (
+                <>
+                  <div className="mission-list-item">
+                    <DragonCarrotGlyph size={26} />
+                    <span>Collect the three numbered carrots</span>
+                  </div>
+                  <div className="mission-list-item">
+                    <span className="mini-code">A = 1</span>
+                    <span>Crack the word code at the door</span>
+                  </div>
+                </>
+              ) : null}
+              {level.mission === "radar" ? (
+                <>
+                  <div className="mission-list-item">
+                    <DragonRadarGlyph size={28} active />
+                    <span>Find the Dragon Radar</span>
+                  </div>
+                  <div className="mission-list-item">
+                    <DragonOrb stars={level.orbStars} size={28} glow={false} />
+                    <span>Use the radar to find the {level.orbStars}-star Dragon Orb</span>
+                  </div>
+                  <div className="mission-list-item">
+                    <DragonCoinGlyph size={26} />
+                    <span>Collect 3 Dragon Coins (bonus)</span>
+                  </div>
+                  <div className="mission-list-item">
+                    <IconLock size={20} />
+                    <span>Open the sealed door</span>
+                  </div>
+                </>
+              ) : null}
+            </div>
+            {floor === 1 && !seenTutorial ? (
+              <div className="tutorial-box">
+                <strong>How to play</strong>
+                <p>Tap a corridor to walk. You stop at each fork, then choose again.</p>
+                <p>
+                  Rescue your friend, reach the center star, then head for the door. This first
+                  floor does not need the Dragon Radar.
+                </p>
+              </div>
+            ) : null}
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={readMission}>
+                <IconSpeaker size={18} />
+                Read
+              </button>
+              <button className="btn btn-primary" onClick={startFloor} autoFocus>
+                Let&apos;s go!
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {lockOpen && !showComplete ? (
+        <div className="modal-backdrop lock-backdrop">
+          <div
+            className="modal-card lock-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="door-lock-title"
+          >
+            {level.mission === "coins" ? (
+              <>
+                <span className="eyebrow">Counting door</span>
+                <h2 id="door-lock-title">How many Dragon Coins did you collect?</h2>
+                <div className="count-grid">
+                  {level.coinChoices.map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className="count-choice"
+                      data-count-choice={value}
+                      onClick={() => answerCount(value)}
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <span className="eyebrow">Carrot code</span>
+                <h2 id="door-lock-title">Crack the word!</h2>
+                <p className="lock-help">Use A = 1, B = 2, C = 3 ... to turn the numbers into letters.</p>
+                <div className="code-numbers" aria-label="Carrot numbers">
+                  {level.carrotNumbers.map((value, index) => (
+                    <span key={`${value}-${index}`}>{value}</span>
+                  ))}
+                </div>
+                <div className="code-alphabet" aria-hidden="true">
+                  {ALPHABET.map((letter, index) => (
+                    <span key={letter}>
+                      <b>{letter}</b>
+                      <small>{index + 1}</small>
+                    </span>
+                  ))}
+                </div>
+                <div className="code-choices">
+                  {level.codeChoices.map((word) => (
+                    <button
+                      key={word}
+                      type="button"
+                      className="code-choice"
+                      data-code-choice={word}
+                      onClick={() => answerCode(word)}
+                    >
+                      {word}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+            {lockError ? (
+              <p className="lock-error" role="alert">
+                {lockError}
+              </p>
+            ) : null}
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={closeLock}>
+                Back to maze
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showComplete ? (
+        <div className="modal-backdrop complete-backdrop">
+          <div className="modal-card complete-card" role="dialog" aria-modal="true" aria-labelledby="floor-complete-title">
+            <span className="eyebrow">Floor {floor} clear!</span>
+            <h2 id="floor-complete-title">{completeTitle}</h2>
+            <div className="complete-row">
+              <DragonOrb stars={level.orbStars} size={120} />
+              <CharacterAvatar character={friend} size={120} aura />
+            </div>
+            <p className="complete-copy">
+              {friend.name} is safe. {friend.greeting}
+            </p>
+            <div className="orb-total">
+              <IconStar size={18} />
+              <span>{orbsFound} of {TOTAL_FLOORS} Dragon Orbs</span>
+            </div>
+            <div className="complete-bonus">
+              {level.mission === "radar" ? (
+                <span>
+                  <DragonRadarGlyph size={22} />
+                  Radar found
+                </span>
+              ) : null}
+              {level.mission === "rescue" ? (
+                <span>
+                  <DragonOrb stars={level.orbStars} size={20} />
+                  Center star found
+                </span>
+              ) : null}
+              {level.mission === "coins" ? (
+                <span>
+                  <DragonCoinGlyph size={20} />
+                  You counted {level.coinCells.length} Dragon Coins
+                </span>
+              ) : null}
+              {level.mission === "code" ? (
+                <span>
+                  <DragonCarrotGlyph size={20} />
+                  Code cracked: {level.codeWord}
+                </span>
+              ) : null}
+              {level.coinCells.length > 0 && level.mission !== "coins" ? (
+                <span>
+                  <DragonCoinGlyph size={20} />
+                  {coinsCollected.length}/{level.coinCells.length} bonus coins
+                </span>
+              ) : null}
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={onBack}>
+                Tower map
+              </button>
+              <button className="btn btn-primary" onClick={nextFloor} autoFocus>
+                {floor >= TOTAL_FLOORS ? "Meet the dragon!" : "Next floor"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}

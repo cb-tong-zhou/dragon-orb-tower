@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="35%" r="80%">
+      <stop offset="0%" stop-color="#2D6A78"/>
+      <stop offset="100%" stop-color="#173A4D"/>
+    </radialGradient>
+    <radialGradient id="orb" cx="35%" cy="28%" r="75%">
+      <stop offset="0%" stop-color="#FFF3B0"/>
+      <stop offset="30%" stop-color="#FFC93C"/>
+      <stop offset="65%" stop-color="#FF9F1C"/>
+      <stop offset="100%" stop-color="#E85D04"/>
+    </radialGradient>
+    <pattern id="dots" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="4" cy="4" r="2" fill="#FFF4DC" opacity="0.12"/>
+    </pattern>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="112" fill="url(#dots)"/>
+  <g opacity="0.22" stroke="#FFD166" stroke-width="10" stroke-linecap="round">
+    <path d="M256 56 V96"/>
+    <path d="M256 416 V456"/>
+    <path d="M56 256 H96"/>
+    <path d="M416 256 H456"/>
+    <path d="M115 115 L143 143"/>
+    <path d="M369 369 L397 397"/>
+    <path d="M397 115 L369 143"/>
+    <path d="M143 369 L115 397"/>
+  </g>
+  <circle cx="256" cy="256" r="166" fill="#FFB347" opacity="0.22"/>
+  <circle cx="256" cy="256" r="150" fill="url(#orb)" stroke="#7A2E0E" stroke-width="16"/>
+  <path d="M170 190 C192 150 248 136 300 148" fill="none" stroke="#FFF7D6" stroke-width="22" stroke-linecap="round" opacity="0.7"/>
+  <g fill="#C0261D" stroke="#8A1C14" stroke-width="4">
+    <path d="M256 128 L265 153 L291 154 L270 170 L278 195 L256 180 L234 195 L242 170 L221 154 L247 153 Z"/>
+    <path d="M327 178 L334 198 L355 199 L338 212 L344 232 L327 220 L310 232 L316 212 L299 199 L320 198 Z"/>
+    <path d="M327 302 L334 322 L355 323 L338 336 L344 356 L327 344 L310 356 L316 336 L299 323 L320 322 Z"/>
+    <path d="M256 344 L265 369 L291 370 L270 386 L278 411 L256 396 L234 411 L242 386 L221 370 L247 369 Z"/>
+    <path d="M185 302 L192 322 L213 323 L196 336 L202 356 L185 344 L168 356 L174 336 L157 323 L178 322 Z"/>
+    <path d="M185 178 L192 198 L213 199 L196 212 L202 232 L185 220 L168 232 L174 212 L157 199 L178 198 Z"/>
+    <path d="M256 246 L265 266 L285 267 L269 280 L275 300 L256 288 L237 300 L243 280 L227 267 L247 266 Z"/>
+  </g>
+  <circle cx="205" cy="205" r="18" fill="#FFF9DD" opacity="0.85"/>
+</svg>
