@@ -1,6 +1,8 @@
 # Dragon Orb Tower
 
-An all-ages circular-maze adventure PWA. Rescue seven friends, find the Dragon Radar, recover seven numbered Dragon Orbs, and wake the dragon at the top of the tower. Optional Dragon Coins reward exploring every side path.
+[![Deploy to Vercel](https://github.com/cb-tong-zhou/dragon-orb-tower/actions/workflows/deploy.yml/badge.svg)](https://github.com/cb-tong-zhou/dragon-orb-tower/actions/workflows/deploy.yml)
+
+An all-ages circular-maze adventure PWA. Rescue seven friends, solve each floor's mission, recover seven numbered Dragon Orbs, and wake the dragon at the top of the tower. The first three floors follow a hand-drawn difficulty ladder: a center-star rescue, a coin-counting maze, and a bunny-shaped carrot code. Floors 4–7 use the Dragon Radar to reveal their hidden orbs.
 
 The characters and art are original, with a classic adventure-cartoon spirit. They are intentionally isolated in `src/content/characters.ts` so the game can be reskinned easily.
 
@@ -25,10 +27,10 @@ Open <http://127.0.0.1:4173/>.
 ## How to play
 
 - **Tap a corridor.** Sora walks to the next fork, then waits for your next tap.
-- **Find the Dragon Radar first.** The numbered Dragon Orb stays hidden on the map until the radar is picked up.
-- **Rescue the trapped friend and collect the orb.** The sealed door opens only when the friend is safe, the radar is found, and the orb is yours. The door has a red X while sealed.
-- **Dragon Coins are optional bonus treasure.** Three are hidden in side paths on every floor; the mission bar tracks how many you have found.
-- **Hint** draws a dotted route to the next goal, in order: friend, radar, orb, door.
+- **Every floor has its own mission.** Floor 1 is a rescue with a star in the center. Floor 2 asks you to collect every Dragon Coin and count them at the door. Floor 3 hides numbered carrots in a bunny-shaped maze and asks you to crack an `A = 1` code. Floors 4–7 bring back the Dragon Radar, which reveals the hidden orb.
+- **Rescue the trapped friend and complete the mission.** The sealed door has a red X until that floor's goals are finished, then turns green.
+- **Dragon Coins are bonus treasure on radar floors.** Three are hidden in side paths on Floors 4–7. Floor 2's twelve coins are the main counting mission, so its mission chip deliberately hides the total.
+- **Hint** draws a dotted route to the next goal: friend, then the floor's collectible or orb, then the door.
 - **Read aloud** speaks the floor story and mission.
 - **Big maze** lets the puzzle fill the screen and hides the surrounding interface. Press Escape or tap Exit big maze to return.
 - **Settings → Easy walking** makes one tap follow the whole route. This is best for very small players.
@@ -37,17 +39,17 @@ Open <http://127.0.0.1:4173/>.
 
 ## Campaign
 
-| Floor | Friend | Theme | Orb |
-| --- | --- | --- | --- |
-| 1 | Mira | Crash Landing | 1-star |
-| 2 | Bo | Dumpling Dojo | 2-star |
-| 3 | Pico | Green Garden | 3-star |
-| 4 | Roku | Sky Library | 4-star |
-| 5 | Taro | Sandcastle | 5-star |
-| 6 | Nova | Star Forge | 6-star |
-| 7 | Kiko | Wish Room | 7-star |
+| Floor | Friend | Theme | Mission | Orb |
+| --- | --- | --- | --- | --- |
+| 1 | Mira | Crash Landing | Rescue + center star | 1-star |
+| 2 | Bo | Dumpling Dojo | Collect 12 coins + count | 2-star |
+| 3 | Pico | Bunny Garden | 3 numbered carrots + `A = 1` code | 3-star |
+| 4 | Roku | Sky Library | Dragon Radar + hidden orb | 4-star |
+| 5 | Taro | Sandcastle | Dragon Radar + hidden orb | 5-star |
+| 6 | Nova | Star Forge | Dragon Radar + hidden orb | 6-star |
+| 7 | Kiko | Wish Room | Dragon Radar + hidden orb | 7-star |
 
-Every floor has a base seed for its theme and ring count, plus a random run seed each time it is opened. The result is a fresh, validated maze on the first play and on every replay, rather than a fixed campaign layout. Floor 1 has 9 rings and 180 cells; Floor 7 grows to 12 rings and 276 cells. The growing-tree carve mixes long routes with many short forks, and portal cells are chosen after carving so the start, friend, and exit are far apart. Braiding is disabled, so every floor is a perfect maze with many forks and false trails. The generator rejects easy layouts: the friend must be at least 6 rings away, the radar at least 8 rings away, the orb at least 5 rings away, and there must be at least 2.5 dead ends per ring (23+ on Floor 1). Every floor has one friend, one Dragon Radar, one numbered orb, and three optional Dragon Coins.
+Every floor has a base seed for its theme and ring count, plus a random run seed each time it is opened. The result is a fresh, validated maze on the first play and on every replay, rather than a fixed campaign layout. Floor 1 has 10 rings and about 228 cells. Floor 2 grows to 15 rings and about 468 cells with 12 coins and opposite start/exit portals. Floor 3 has a 10-ring head plus two tall 4×9 ear mini-mazes (about 300 cells total), three numbered carrots, and a multiple-choice code door. Floors 4–7 use 11–12 rings (about 268–316 cells), the radar/orb loop, and 3 optional coins. The outer rings step up to 40–56 sectors so the concentric bands stay finely segmented instead of stretching into wide open lanes. The growing-tree carve mixes long routes with short forks, and portal cells are chosen after carving so the start, friend, and exit are far apart. Braiding is disabled, so every floor is a perfect maze with many forks and false trails. The generator rejects easy layouts with floor-specific thresholds for friend/exit distance, orb/radar distance, and dead ends. Every floor has one friend and one numbered orb; the first three floors award the orb at the door or center, while radar floors hide it until the radar is found.
 
 ## Development
 
@@ -59,14 +61,15 @@ Every floor has a base seed for its theme and ring count, plus a random run seed
 
 Useful files:
 
-- `src/content/floors.ts` — campaign order, story text, base seeds
+- `src/content/floors.ts` — campaign order, mission configs, story text, per-floor tuning
 - `src/content/characters.ts` — Sora and the seven friends; reskin point
-- `src/generator/generate.ts` — per-run seeded maze, radar, coin, and objective generation
+- `src/generator/generate.ts` — per-run seeded maze, mission objectives, bunny ears, radar/coin/carrot generation
 - `src/generator/graph.ts` — paths and corridor stops
-- `src/components/Maze.tsx` — maze art, doors, radar/coin/orb tokens, hints
+- `src/components/Maze.tsx` — maze art, doors, bunny ears, radar/coin/orb/carrot tokens, hints
 - `src/components/DragonRadar.tsx` — radar collectible and mission icon
-- `src/components/DragonCoin.tsx` — optional Dragon Coin collectible
-- `src/screens/PlayScreen.tsx` — gameplay loop and mission HUD
+- `src/components/DragonCoin.tsx` — Dragon Coin collectible
+- `src/components/DragonCarrot.tsx` — numbered carrot collectible
+- `src/screens/PlayScreen.tsx` — gameplay loop, mission HUD, counting/code doors
 - `src/styles.css` — visual system and responsive layouts
 
 ## Checks
@@ -78,6 +81,6 @@ npm run smoke     # needs the dev server on 127.0.0.1:5173
 npm run pwa:check # needs the preview server on 127.0.0.1:4173
 ```
 
-The E2E suite covers default corridor-stop walking, hints, the hidden orb and radar reveal, all three door objectives, sealed-door feedback, dynamic per-run layouts, settings persistence, reset, floor 7, the finale wish, and Play Again. The PWA check covers manifest/icons, service-worker control, an offline reload, and offline play.
+The E2E suite covers default corridor-stop walking on Floor 1, hints, the center-star rescue, Floor 2's hidden coin total and counting door, Floor 3's bunny ears and code door, a radar floor's hide/reveal orb flow, dynamic per-run layouts, settings persistence, reset, floor 7, the finale wish, and Play Again. The PWA check covers manifest/icons, service-worker control, an offline reload, and offline play.
 
 Screenshots from the checks are in `screenshots/`.
