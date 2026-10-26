@@ -1,6 +1,6 @@
 # Story Copy Deck — Dragon Orb Tower
 
-**Status:** draft for the Phase 1 content pass. No code is wired to these strings yet.
+**Status:** draft for the Phase 1 content pass, re-checked against the committed codebase 2026-10-25 (Revision 3). No code is wired to these strings yet.
 **Canonical:** if this deck and `STORY_PLAN.md` disagree, this deck wins for implementation. Update the plan to match.
 **Scope:** all player-facing story strings for the seven floors, prologue, finale, replay, and optional scout banter.
 **Rules:** one line per toast; no blocking cutscenes; every line must work when read aloud by one warm narrator.
@@ -49,11 +49,11 @@
 | ID | Trigger | Pri | Voice | Max | Text |
 |---|---|---|---|---|---|
 | `F2-CHAPTER` | Intro modal | P1 | — | 4 | “The Shared Feast” |
-| `F2-INTRO` | Floor intro | P0 | N | 32 | “Bo's dumpling dojo is a maze of steam and chopsticks! Rescue Bo, collect all 12 Dragon Coins, and count them at the door to earn the 2-star orb.” |
+| `F2-INTRO` | Floor intro | P0 | N | 28 | “Bo's dumpling dojo is a maze of steam and chopsticks! Rescue Bo, collect every Dragon Coin, and count them at the door to earn the 2-star orb.” |
 | `F2-ORB-HINT` | Orb hint | P0 | N | 14 | “Collect every coin and answer the counting question at the door.” |
 | `F2-RESCUE` | Rescue toast | P0 | B | 26 | “Nice moves! I've been training solo so long I forgot how to share a meal. Let's count the dumplings together.” |
 | `F2-COIN-FIRST` | First coin | P1 | B | 12 | “Dragon Coin! It smells like a dumpling. One for the feast!” |
-| `F2-COIN-NEXT` | Later coin | P1 | B | 8 | “That's {n} for the feast!” |
+| `F2-COIN-NEXT` | Later coin | P1 | B | 8 | “Another dumpling for the feast! Keep exploring.” |
 | `F2-PLACES` | After rescue, optional | P1 | B | 18 | “Twelve places. One for every dumpling. Four are for the next friends.” |
 | `F2-SORA-COUNT` | After `F2-PLACES` | P1 | S | 8 | “There are only eight of us.” |
 | `F2-DOOR` | Code door | P0 | N | 10 | “How many Dragon Coins did you collect?” |
@@ -63,6 +63,8 @@
 | `F2-COMPLETE` | Floor complete | P0 | N | 18 | “Twelve coins, twelve dumplings, one shared feast. The 2-star orb is yours!” |
 | `F2-TEASER` | Next-floor button | P1 | N | 16 | “A carrot rolls down the stairs. Something is hopping in the garden above.” |
 | `F2-SORA-LIE` | Optional, after feast | P2 | S | 10 | “I could have done it alone.” / “You could have. It wouldn't have been a feast.” |
+
+**Floor 2 copy rule (matches the committed code):** never reveal the running coin count or the total in any Floor 2 string. The game shows “Dragon Coin found! Keep exploring.” per coin and “All Dragon Coins found! Head to the door.” on the last one; the counting question at the door is the test. No “That's {n}…” toasts, no “12” in the intro, the mission chip, or the hint.
 
 ---
 
@@ -224,6 +226,17 @@
 
 **Rules:** one line per dead end; no new mechanics; the friends' chalk X is white/cream on the floor, the Hollow Wish's seal is red on the door.
 
+**Blocked-friend and grumblin strings (owned by `FRIENDS_PLAN.md`; listed here only so the two decks never drift):**
+
+| ID | Trigger | Pri | Voice | Max | Text |
+|---|---|---|---|---|---|
+| `SCOUT-BLOCKED-BAR` | Friend blocked, party bar | P1 | — | 6 | “Help {name}!” |
+| `SCOUT-BLOCKED-LABEL` | Party bar badge / tap | P1 | — | 6 | “{name} needs help” |
+| `SCOUT-BLOCKED-DOOR` | Door while blocked | P1 | N | 8 | “A friend needs help first!” |
+| `SCOUT-BLOCKED-RELIEF` | After the rescue | P1 | friend | 3 | “Phew! Thanks!” |
+
+**Grumblin voice rule:** the grumblin itself never gets a sentence on screen. It grumbles (audio), poofs, and flees. Kid-facing copy says “grumblin”; the code may keep its internal `Gremlin*` names. See `STORY_PLAN.md` §11.16 for the story rules (never Floor 1, never scary, never in the finale).
+
 ---
 
 ## 11. Replay / story so far (P1)
@@ -263,14 +276,19 @@
 | *(new)* `FloorStory.echoes` | Story lines per collectible | `F*-ECHO-*` (+ `F*-CARROT-*` on Floor 3) | 3 |
 | `friend.name` | UI | Keep; no change | — |
 | `WISHES` | Three finale cards | Add `FIN-WISH-END` later; keep all three | 5 |
+| `PlayScreen` coin toast | `coins` mission hides the running count (“Dragon Coin found! Keep exploring.”) | Keep the count hidden in every Floor 2 string; see the Floor 2 copy rule | 1–2 |
 | `SaveData` | v1 | v2 merged schema (`rescuedFriends`, `settings.friendHelp`, `seenScoutTutorial`, `echoes`) | 3 |
 | `speak(text, enabled)` | Fixed en-US | Optional `lang` / `speakAs` later | 3+ |
 
 **Do not change:** `Character.id`, character colors, `FloorConfig` fields, ring counts, mission logic, item placement, or the generator.
 
-**Known current-config facts this deck follows:**
+**Known current-config facts this deck follows (re-checked 2026-10-25; tuning in flight):**
 - Floor 2 has **12** coins (`coinCount: 12`), not 8. The earlier story draft said 8; this deck uses 12.
-- Floor 2 has **15** rings; Floor 3 has **10** rings.
+- Ring and sector counts are the map agent's tuning and may change again — as of the 2026-10-25 working tree: F1 12 rings / 10 sectors, F2 18 / 16, F3 12 / 10 (plus the tall **5×9 spiral ear mini-mazes**, `earRow`), F4–7 11–12 rings at 28 sectors. **Treat `src/content/floors.ts` as the source of truth; no string in this deck may reference a ring or sector count.**
+- The generator now uses recursive division, so corridors form long sweeping lanes; this changes no strings.
+- Floor 2's coin toasts hide the running count by design; only the last coin announces “All Dragon Coins found!”
 - Floor 3 uses the `A = 1` code word **BUG** with carrots 2, 21, 7.
 - Floors 4–7 have 3 optional coins each; plus Floor 3's 3 mandatory carrot lines = **15** total story lines. Only the 12 coin echoes are optional pickups; the carrots are mission progress.
 - Floor 1 has no optional echoes.
+- The renderer merges collinear wall edges into long SVG paths; map props must stay at cell centers.
+- Grumblin strings are owned by `FRIENDS_PLAN.md` (see §10); the internal code name is `Gremlin*`, the kid-facing word is “grumblin”.

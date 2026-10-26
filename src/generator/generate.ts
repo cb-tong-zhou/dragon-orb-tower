@@ -7,6 +7,7 @@ import {
   openDegree,
   reachableCount,
 } from "./graph";
+import { buildPolarGrid, carveGrowing, carveHybrid, carveRing } from "./carve";
 import { makeRng, pick, shuffle, type Rng } from "./rng";
 import type {
   Cell,
@@ -167,6 +168,97 @@ function buildEdges(cells: Cell[], rings: number): Edge[] {
   }
 
   return edges;
+}
+
+/**
+ * Recursive-division maze on the polar grid.
+ *
+ * The hand-drawn reference maps are built from long concentric arcs and long
+ * radial spokes, not from a branching tree of tiny wall stubs.  This starts
+ * with the annulus fully open, then repeatedly draws one long wall across the
+ * current region and leaves a single doorway in it.  Each wall is therefore a
+ * continuous arc or radial line, and the renderer can merge it into one stroke.
+ */
+function divideMaze(cells: Cell[], edges: Edge[], rings: number, sectors: number, rng: Rng): void {
+  const tangential = new Map<string, Edge>();
+  const radial = new Map<string, Edge>();
+  const centerEdges: Edge[] = [];
+
+  for (const edge of edges) {
+    if (edge.kind === "tangential") {
+      const [, ring, sector] = edge.id.split(":");
+      tangential.set(`${ring}:${sector}`, edge);
+    } else if (edge.kind === "radial") {
+      const [, innerRing, , sector] = edge.id.split(":");
+      if (innerRing === "0") centerEdges.push(edge);
+      else radial.set(`${innerRing}:${sector}`, edge);
+    }
+  }
+
+  // Begin with the annulus completely open, then add walls.  The centre stays
+  // a leaf so it cannot become a shortcut hub.
+  for (const edge of edges) {
+    if (edge.kind === "tangential" || edge.kind === "radial") edge.open = true;
+  }
+  for (const edge of centerEdges) edge.open = false;
+  const centerSector = Math.floor(rng() * sectors);
+  const centerEdge = edges.find((edge) => edge.id === `r:0:0:${centerSector}`);
+  if (centerEdge) centerEdge.open = true;
+
+  // Cut the cylinder at one spoke so the annulus behaves like a rectangle.
+  // The cut is a long radial wall with one doorway.
+  const cutGapRing = 1 + Math.floor(rng() * (rings - 1));
+  for (let ring = 1; ring < rings; ring++) {
+    if (ring === cutGapRing) continue;
+    const edge = tangential.get(`${ring}:${sectors - 1}`);
+    if (edge) edge.open = false;
+  }
+
+  const closeVertical = (sector: number, r0: number, r1: number, gapRing: number) => {
+    for (let ring = r0; ring <= r1; ring++) {
+      if (ring === gapRing) continue;
+      const edge = tangential.get(`${ring}:${sector}`);
+      if (edge) edge.open = false;
+    }
+  };
+
+  const closeHorizontal = (ring: number, s0: number, s1: number, gapSector: number) => {
+    for (let sector = s0; sector <= s1; sector++) {
+      if (sector === gapSector) continue;
+      const edge = radial.get(`${ring}:${sector}`);
+      if (edge) edge.open = false;
+    }
+  };
+
+  const divide = (r0: number, r1: number, s0: number, s1: number) => {
+    const height = r1 - r0 + 1;
+    const width = s1 - s0 + 1;
+    if (width <= 1 && height <= 1) return;
+
+    // Keep subdividing one-wide corridors as well, so the map does not open
+    // into large blank halls.  The first few divisions still produce the long
+    // strokes; these later divisions fill the remaining gaps.
+    let horizontal: boolean;
+    if (height <= 1) horizontal = false;
+    else if (width <= 1) horizontal = true;
+    else horizontal = rng() < 0.8;
+
+    if (horizontal) {
+      const wallRing = r0 + Math.floor(rng() * (height - 1));
+      const gapSector = s0 + Math.floor(rng() * width);
+      closeHorizontal(wallRing, s0, s1, gapSector);
+      divide(r0, wallRing, s0, s1);
+      divide(wallRing + 1, r1, s0, s1);
+    } else {
+      const wallSector = s0 + Math.floor(rng() * (width - 1));
+      const gapRing = r0 + Math.floor(rng() * height);
+      closeVertical(wallSector, r0, r1, gapRing);
+      divide(r0, r1, s0, wallSector);
+      divide(r0, r1, wallSector + 1, s1);
+    }
+  };
+
+  divide(1, rings - 1, 0, sectors - 1);
 }
 
 function openEarSpiral(earCells: Cell[][], earEdges: Edge[]): void {
@@ -330,51 +422,6 @@ function addEars(
   return { extraTop: EAR_HEIGHT - 0.8, headWallGaps, earShapes, earInnerShapes };
 }
 
-function carve(
-  cells: Cell[],
-  edges: Edge[],
-  startCell: number,
-  rng: Rng,
-  newestChance: number,
-): void {
-  const adjacency = buildAdjacency(cells, edges);
-  const edgeById = new Map(edges.map((edge) => [edge.id, edge]));
-  const visited = new Set<number>([startCell]);
-  const active = [startCell];
-
-  // Growing-tree carve: mostly follow the newest branch, but sometimes jump to
-  // a random active cell. A higher newestChance keeps longer, calmer routes.
-  while (active.length > 0) {
-    const useNewest = rng() < newestChance;
-    const index = useNewest ? active.length - 1 : Math.floor(rng() * active.length);
-    const current = active[index];
-    const candidates = adjacency[current].filter((entry) => !visited.has(entry.to));
-    if (candidates.length === 0) {
-      active.splice(index, 1);
-      continue;
-    }
-    const chosen = pick(candidates, rng);
-    const edge = edgeById.get(chosen.edgeId);
-    if (!edge) {
-      active.splice(index, 1);
-      continue;
-    }
-    edge.open = true;
-    visited.add(chosen.to);
-    active.push(chosen.to);
-  }
-
-  // If anything was disconnected (shouldn't happen with this grid), connect it
-  // through the closest available edge so the level is always playable.
-  for (const cell of cells) {
-    if (visited.has(cell.id)) continue;
-    const entries = adjacency[cell.id];
-    const edge = edgeById.get(entries[0]?.edgeId ?? "");
-    if (edge) edge.open = true;
-    visited.add(cell.id);
-  }
-}
-
 function braidMaze(cells: Cell[], edges: Edge[], braid: number, rng: Rng): number {
   if (braid <= 0) return 0;
   const adjacency = buildAdjacency(cells, edges);
@@ -493,45 +540,46 @@ function addPortals(
   const centerDistances = distancesFrom(cells, edges, 0);
   let startOuter: Cell;
   let exitOuter: Cell;
-  let chamberOuter: Cell;
 
   if (config.portalStyle === "opposite") {
     startOuter = nearestOuterCell(cells, rings, Math.PI);
-    exitOuter = nearestOuterCell(cells, rings, 0);
     const startDistances = distancesFrom(cells, edges, startOuter.id);
-    const exitDistances = distancesFrom(cells, edges, exitOuter.id);
-    chamberOuter = chooseOuterCell(
-      outerCells,
-      [startOuter, exitOuter],
-      (cell) => startDistances[cell.id] + exitDistances[cell.id] * 0.5,
-      rng,
+    const oppositeCells = outerCells.filter((cell) => angleDistance(cell.angle, 0) <= 0.45);
+    const rankedOpposite = [...(oppositeCells.length > 0 ? oppositeCells : outerCells)].sort(
+      (a, b) => startDistances[b.id] - startDistances[a.id],
     );
+    exitOuter = rankedOpposite[0] ?? startOuter;
   } else {
-    // Pick portal cells after carving, using real maze distances. This keeps the
-    // start, friend, and exit far apart even when the tree is very branchy.
+    // Pick the rim doorways after carving, using real maze distances. This
+    // keeps the start and exit far apart even when the tree is very branchy.
     startOuter = chooseOuterCell(outerCells, [], (cell) => centerDistances[cell.id], rng);
     const startDistances = distancesFrom(cells, edges, startOuter.id);
-    chamberOuter = chooseOuterCell(
-      outerCells,
-      [startOuter],
-      (cell) => startDistances[cell.id],
-      rng,
-    );
-    const chamberDistances = distancesFrom(cells, edges, chamberOuter.id);
-    exitOuter = chooseOuterCell(
-      outerCells,
-      [startOuter, chamberOuter],
-      (cell) => startDistances[cell.id] + chamberDistances[cell.id] * 0.5,
-      rng,
-    );
+    const rankedExit = [...outerCells]
+      .filter((cell) => cell.id !== startOuter.id)
+      .sort((a, b) => startDistances[b.id] - startDistances[a.id]);
+    exitOuter = rankedExit[0] ?? startOuter;
   }
+
+  const startDistances = distancesFrom(cells, edges, startOuter.id);
+  const exitDistances = distancesFrom(cells, edges, exitOuter.id);
+  const internalCells = cells.filter(
+    (cell) => cell.kind === "normal" && cell.ring >= 1 && cell.ring < rings - 1,
+  );
+  const rankedFriends = [...internalCells]
+    .map((cell) => ({
+      cell,
+      score: startDistances[cell.id] + exitDistances[cell.id] * 0.5,
+    }))
+    .sort((a, b) => b.score - a.score);
+  const friendPool = rankedFriends.slice(0, Math.min(6, rankedFriends.length));
+  const friendInternal = friendPool.length > 0 ? pick(friendPool, rng).cell : internalCells[0];
 
   const nextCells = [...cells];
   const nextEdges = [...edges];
   const portals: Portal[] = [];
 
   const make = (
-    kind: "start" | "exit" | "chamber",
+    kind: "start" | "exit",
     outer: Cell,
   ): number => {
     const external = makeExternalCell(nextCells.length, kind, outer.angle, outerRadius);
@@ -555,7 +603,7 @@ function addPortals(
 
   const startCell = make("start", startOuter);
   const exitCell = make("exit", exitOuter);
-  const friendCell = make("chamber", chamberOuter);
+  const friendCell = friendInternal.id;
 
   return { cells: nextCells, edges: nextEdges, portals, startCell, exitCell, friendCell };
 }
@@ -770,17 +818,17 @@ function validate(level: Level, config: FloorConfig): boolean {
     if (level.orbCell !== 0) return false;
     if (level.radarCell >= 0) return false;
     if (level.coinCells.length !== 0) return false;
-    if (level.metrics.pathToFriend < config.rings * 4) return false;
-    if (level.metrics.pathToOrb < config.rings * 4) return false;
-    if (level.metrics.pathToExit < config.rings * 3) return false;
+    if (level.metrics.pathToFriend < config.rings * 2) return false;
+    if (level.metrics.pathToOrb < config.rings * 1.8) return false;
+    if (level.metrics.pathToExit < config.rings * 1.3) return false;
   }
 
   if (config.mission === "coins") {
     const count = config.coinCount ?? 0;
     if (count <= 0 || level.coinCells.length !== count) return false;
     if (level.orbCell >= 0 || level.radarCell >= 0) return false;
-    if (level.metrics.pathToFriend < config.rings * 4) return false;
-    if (level.metrics.pathToExit < config.rings * 4) return false;
+    if (level.metrics.pathToFriend < config.rings * 3) return false;
+    if (level.metrics.pathToExit < config.rings * 2.5) return false;
     if (level.coinChoices.length !== 4 || !level.coinChoices.includes(count)) return false;
     for (const coinCell of level.coinCells) {
       const cell = level.cells[coinCell];
@@ -794,8 +842,8 @@ function validate(level: Level, config: FloorConfig): boolean {
     if (level.carrotNumbers.length !== 3) return false;
     if (level.orbCell >= 0 || level.radarCell >= 0) return false;
     if (level.coinCells.length !== 0) return false;
-    if (level.metrics.pathToFriend < config.rings * 3) return false;
-    if (level.metrics.pathToExit < config.rings * 3) return false;
+    if (level.metrics.pathToFriend < config.rings * 2.5) return false;
+    if (level.metrics.pathToExit < config.rings * 2.5) return false;
     if (!config.code || level.codeWord !== config.code.word) return false;
     if (level.codeChoices.length !== 3 || !level.codeChoices.includes(level.codeWord)) return false;
     const earsUsed = new Set<number>();
@@ -813,11 +861,11 @@ function validate(level: Level, config: FloorConfig): boolean {
   if (config.mission === "radar") {
     if (level.orbCell < 0 || level.radarCell < 0) return false;
     if (level.coinCells.length !== (config.coinCount ?? 3)) return false;
-    if (level.metrics.pathToOrb < config.rings * 5) return false;
-    if (bfsPath(level, level.startCell, level.radarCell).length - 1 < config.rings * 8) {
+    if (level.metrics.pathToOrb < config.rings * 4) return false;
+    if (bfsPath(level, level.startCell, level.radarCell).length - 1 < config.rings * 6) {
       return false;
     }
-    if (level.metrics.pathToFriend < config.rings * 6) return false;
+    if (level.metrics.pathToFriend < config.rings * 5) return false;
     if (level.cells[level.orbCell]?.kind === "start") return false;
     if (level.cells[level.orbCell]?.kind === "exit") return false;
     if (level.cells[level.orbCell]?.kind === "chamber") return false;
@@ -836,6 +884,29 @@ function validate(level: Level, config: FloorConfig): boolean {
   return true;
 }
 
+type CarverKind = "divide" | "ring" | "growing" | "hybrid";
+const CARVERS: CarverKind[] = ["divide", "ring", "growing", "hybrid"];
+
+/** Ear cells are a rectangular hand-authored template, so bunny floors always divide. */
+function resolveCarver(config: FloorConfig, seed: string): CarverKind {
+  if (config.bunny) return "divide";
+  const requested = config.generator ?? "auto";
+  if (requested !== "auto") return requested;
+  const roll = makeRng(`${seed}:carver`, "maze")();
+  return CARVERS[Math.min(CARVERS.length - 1, Math.floor(roll * CARVERS.length))];
+}
+
+/** Sector count for the growing carver: rings get wider towards the rim. */
+function growingSectorCounts(rings: number, sectors: number): number[] {
+  const inner = Math.max(6, Math.round(sectors * 0.6));
+  const outer = Math.max(inner + 4, Math.round(sectors * 1.6));
+  return Array.from({ length: rings }, (_, ring) => {
+    if (ring === 0) return 1;
+    const t = rings <= 2 ? 0 : (ring - 1) / (rings - 2);
+    return Math.max(6, Math.round(inner + (outer - inner) * t));
+  });
+}
+
 function generateAttempt(
   config: FloorConfig,
   attempt: number,
@@ -850,12 +921,35 @@ function generateAttempt(
   const rng = makeRng(seed, "maze");
   const rings = config.rings;
   const sectors = config.sectors ?? 24;
-  const cells = buildCells(rings, sectors);
-  const edges = buildEdges(cells, rings);
+  const carver = resolveCarver(config, seed);
 
-  const startOuter = nearestOuterCell(cells, rings, Math.PI);
-  carve(cells, edges, startOuter.id, rng, config.newestChance ?? 0.8);
-  const braidCount = braidMaze(cells, edges, config.braid, rng);
+  let cells: Cell[];
+  let edges: Edge[];
+  let braidCount = 0;
+  if (carver === "ring") {
+    // Dense concentric template: full arcs with small doors.
+    const grid = buildPolarGrid(rings, Array.from({ length: rings }, () => sectors));
+    cells = grid.cells;
+    edges = grid.edges;
+    carveRing(cells, edges, rings, rng);
+  } else if (carver === "hybrid") {
+    // Outer rings keep the concentric template; inner rings wind like corridors.
+    const grid = buildPolarGrid(rings, Array.from({ length: rings }, () => sectors));
+    cells = grid.cells;
+    edges = grid.edges;
+    carveHybrid(cells, edges, rings, rng);
+  } else if (carver === "growing") {
+    // Sectors widen towards the rim, then single-cell corridors are carved.
+    const grid = buildPolarGrid(rings, growingSectorCounts(rings, sectors));
+    cells = grid.cells;
+    edges = grid.edges;
+    carveGrowing(cells, edges, rng);
+  } else {
+    cells = buildCells(rings, sectors);
+    edges = buildEdges(cells, rings);
+    divideMaze(cells, edges, rings, sectors, rng);
+    braidCount = braidMaze(cells, edges, config.braid, rng);
+  }
 
   let extraTop = 0;
   let headWallGaps: HeadWallGap[] = [];

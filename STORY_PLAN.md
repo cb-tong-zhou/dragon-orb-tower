@@ -1,6 +1,6 @@
 # Dragon Orb Tower — Story Bible & Map Narrative Plan
 
-**Status:** direction approved (2026-10-24). No source code has been changed.
+**Status:** direction approved (2026-10-24). Re-checked against the committed codebase 2026-10-25 (Revision 3). The story plan itself has changed no source code.
 **Purpose:** define the complete story for all seven floors, and the visual/narrative layer the map agent can build in parallel.
 **Companions:** `PLAN.md` (original design), `README.md` (current game), `FRIENDS_PLAN.md` (rescued friends who scout), `MAP_STORY_BRIEF.md` (map-agent handoff), `STORY_COPY_DECK.md` (canonical strings), `src/content/floors.ts`, `src/content/characters.ts`, `src/screens/PlayScreen.tsx`, `src/screens/FinaleScreen.tsx`.
 
@@ -31,6 +31,8 @@
 **The truth:** The Forgotten King was a lonely child. The dragon was his only friend and granted his wish out of love. The true wish is not to win the tower — it is to let the story end, and everyone go home.
 
 **Revision 2 adds:** the glass 4-star marble (so Sora never carries the real orb), Sora's flaw, the child king and the dragon's guilt, the rules of the tower, the ring narrative, the dynamic landmark contract, the finale roll call, the copy budget, the replay loop, the voice/localization plan, the prologue, the accessibility checklist, the copy deck, the v2 save, and the playtest rubric.
+
+**Revision 3 (2026-10-25) syncs the plan to the code:** the map redesign landed in commit `3d0fdc0` — bigger floors with a constant per-ring sector count, Floor 3's ears rebuilt as tall 5×9 spiral mini-mazes, and the renderer now merges wall edges into long hand-drawn paths. Floor 2's coin toast hides the running count on purpose (the counting door is the test), so the plan's copy rule changed. The accepted grumblin scouting twist from `FRIENDS_PLAN.md` is folded in as a minor, harmless mischief-maker (§11.16).
 
 ---
 
@@ -196,8 +198,11 @@ Sora has the same lie in his own words: **“A story only counts if you finish i
 | **The Eternal Dragon (Long)** | the dragon at the top | Shenron | Grant the wish | Let go of the king | finale | warm, slow, rumbling, a little funny |
 | **The Forgotten King** | the lonely child king | original (echo of King Piccolo) | Never be forgotten | Have an ending | finale | a small silhouette, a paper crown, one bow |
 | **Grandpa Ren** | Sora's grandfather | Grandpa Gohan | Hear a good story | Let Sora climb | home / F4 / finale | warm, teasing, “Bring me back a story.” |
+| **A grumblin** | the tower's mischief-maker (scouting only) | gag monsters (Muscle Tower / Pilaf's machines) | Make noise | Be shooed | 2+ (scouting) | grumbles, poofs, never a full line |
 
 > **The king is a child.** The tower calls him a king because that is the role the story gave him. His paper crown is a child's craft. He is never portrayed as a tyrant, and he is never mocked. He is a lonely kid who asked his only friend for one more day.
+
+> **The grumblin is a guest of the scouting plan.** It belongs to `FRIENDS_PLAN.md` and appears only while scouting: a small, grumpy mischief-maker that blocks a rescued friend's way home after a successful dead-end check. It is never a villain, never scary, and never hurts anyone — Sora walks over, it grumbles, poofs, and flees. The climb simply pauses until Sora goes to help, which is the arc's thesis as a mechanic: the opposite of finishing alone. See §11.16.
 
 ### 2.1 The Hollow Wish
 
@@ -353,7 +358,7 @@ Approximate anime episode ranges, for orientation only. They vary by release and
 **Map narrative (for the map agent):**
 
 - **Silhouette:** a steamer basket — concentric bamboo rings, with a domed lid at the center.
-- **Rings:** 15 (current config). The bamboo slats make natural corridors.
+- **Rings:** 18 (tuned; `floors.ts` is the source of truth). The bamboo slats make natural corridors.
 - **Landmarks:** dojo gate (exit), kitchen (friend chamber), trophy cabinet (orb), twelve place settings (coin alcoves), a giant bell, training dummies, a child's paper crown on one place setting.
 - **Props:** chopstick bridges, steam clouds, dumpling baskets, a rice scoop, a scoreboard with no numbers, a tiny apron.
 - **Palette:** Bo's orange `#FFB347`, bamboo green, cream, ink.
@@ -363,18 +368,21 @@ Approximate anime episode ranges, for orientation only. They vary by release and
 
 **Dialogue copy deck (draft):**
 
-- **Intro:** “Bo's dumpling dojo is a maze of steam and chopsticks! Rescue Bo, collect all 12 Dragon Coins, and count them at the door to earn the 2-star orb.”
-- **Orb hint:** “The 2-star orb is in the dojo's trophy cabinet.”
+- **Intro:** “Bo's dumpling dojo is a maze of steam and chopsticks! Rescue Bo, collect every Dragon Coin, and count them at the door to earn the 2-star orb.”
+- **Orb hint:** “Collect every coin and answer the counting question at the door.”
 - **Rescue:** “Nice moves! I've been training solo so long I forgot how to share a meal. Let's count the dumplings together.”
 - **Coin (first):** “Dragon Coin! It smells like a dumpling. One for the feast!”
-- **Coin (later):** “That's {n} for the feast!”
+- **Coin (later):** “Another dumpling for the feast! Keep exploring.”
 - **Places:** “Twelve places. One for every dumpling. Four are for the next friends.” / “There are only eight of us.”
+- **Sora (optional, after the feast):** “I could have done it alone.” / “You could have. It wouldn't have been a feast.”
 - **Door:** “How many Dragon Coins did you collect?”
 - **Wrong answer:** “Not quite. Count the empty steamer baskets — one, two...”
 - **Orb:** “The 2-star orb! It was in the trophy cabinet all along. Bo laughs. 'I never looked up.'”
 - **Sealed door:** “The dojo gate is sealed. A voice whispers: 'A strong hero never needs anyone.' Bo's smile slips.”
 - **Completion:** “Twelve coins, twelve dumplings, one shared feast. The 2-star orb is yours!”
 - **Teaser:** “A carrot rolls down the stairs. Something is hopping in the garden above.”
+
+**Copy rule (matches the current code):** Floor 2 copy never reveals the running coin count or the total. The game says “Dragon Coin found! Keep exploring.” for each coin and “All Dragon Coins found! Head to the door.” on the last one — the counting question at the door is the test. Do not restore “That's {n}…” toasts, and do not say “12” in the intro or the mission chip.
 
 **Continuity:** Bo's feast is the first time the friends eat together. In the finale, the “feast for everyone” wish echoes this floor.
 
@@ -406,8 +414,8 @@ Approximate anime episode ranges, for orientation only. They vary by release and
 
 **Map narrative (for the map agent):**
 
-- **Silhouette:** bunny head + two long ears (already supported by `bunny: true`).
-- **Rings:** 10 (current config). The ears are long carrot rows; the head is the garden.
+- **Silhouette:** bunny head + two tall ears (already supported by `bunny: true`).
+- **Rings:** 12 (tuned; `floors.ts` is the source of truth). The ears are tall **5×9 spiral mini-mazes** — one nested U-lane per ear, like hand-drawn carrot rows; the head is the garden. Ear cells expose `earRow` (0 at the tip), so ear props can band by tip / middle / base.
 - **Landmarks:** greenhouse (friend chamber), three carrot patches (carrot cells), ladybug gate (exit), carrot-patch shrine (orb), Pico's meditation stone.
 - **Props:** giant carrots, watering cans, seed packets, a scarecrow with a ladybug on its hat and a child's paper crown on its head, a moon disc, vines.
 - **Palette:** Pico's green `#B9E769`, carrot orange, moon cream, deep green ink.
@@ -462,7 +470,7 @@ Approximate anime episode ranges, for orientation only. They vary by release and
 **Map narrative (for the map agent):**
 
 - **Silhouette:** a floating island shaped like an open book, with a planetarium dome.
-- **Rings:** 11 (current config). Bookshelf rings; cloud bridges between them.
+- **Rings:** 11 (tuned; `floors.ts` is the source of truth). Bookshelf rings; cloud bridges between them.
 - **Landmarks:** reading nook (friend chamber), giant telescope, planetarium dome, the pedestal with the **real 4-star Dragon Orb**, the book with the radar lens, the archive gate.
 - **Props:** floating books, star charts, a fishing rod, a photo of Grandpa Ren as a boy, a cup of cold tea, a constellation projector, Sora's glass 4-star marble (token prop), a child's paper crown on a high shelf, a book titled *The King Who Wouldn't Say Goodnight*.
 - **Palette:** Roku's mint `#A8E6CF`, midnight blue, paper cream, gold star.
@@ -515,7 +523,7 @@ Approximate anime episode ranges, for orientation only. They vary by release and
 **Map narrative (for the map agent):**
 
 - **Silhouette:** a sandcastle — concentric battlements, a keep at the center, a drawbridge.
-- **Rings:** 11 (current config). The rings are castle walls; the moat is a dry channel.
+- **Rings:** 11 (tuned; `floors.ts` is the source of truth). The rings are castle walls; the moat is a dry channel.
 - **Landmarks:** gatehouse (friend chamber), sandbox (radar), keep (orb), drawbridge (exit), three toy alcoves (coins), a kite stuck in a tower.
 - **Props:** sand buckets, a wooden sword, a child's drawing of Taro, a seashell, wind streaks, tiny flags, a half-buried wagon, a child's paper crown half-buried in the sand.
 - **Palette:** Taro's sand `#FFD9A0`, warm brown, sky blue, sunset orange.
@@ -569,7 +577,7 @@ Approximate anime episode ranges, for orientation only. They vary by release and
 **Map narrative (for the map agent):**
 
 - **Silhouette:** a giant gear with a star at its center — or a star-shaped forge with gear teeth.
-- **Rings:** 12 (current config). The rings are gear teeth; the molten channels glow.
+- **Rings:** 12 (tuned; `floors.ts` is the source of truth). The rings are gear teeth; the molten channels glow.
 - **Landmarks:** cooling room (friend chamber), anvil, toolbench (radar), forge heart (orb), blast door (exit), three memory alcoves (coins), a dark star that lights up as the player collects.
 - **Props:** broken scouter, royal seal, unsent letter, hammer, tongs, sparks, a cooling rack, a tiny plant in a tin can (Nova's secret softness), a tiny paper crown on the anvil, a dragon claw mark scored into the cooling-room wall.
 - **Palette:** Nova's pink `#FF9EC4`, forge orange, steel gray, scouter green, deep navy.
@@ -623,7 +631,7 @@ Approximate anime episode ranges, for orientation only. They vary by release and
 **Map narrative (for the map agent):**
 
 - **Silhouette:** a coiled dragon around seven pillars, with the altar at the center.
-- **Rings:** 12 (current config). The rings are the dragon's coils; the pillars are story markers.
+- **Rings:** 12 (tuned; `floors.ts` is the source of truth). The rings are the dragon's coils; the pillars are story markers.
 - **Landmarks:** wish well (friend chamber), altar (orb), constellation ceiling, dragon-mouth door (exit), three memory alcoves (coins), seven pillars with tiny carvings of the previous floors.
 - **Props:** candles, the king's paper crown, a child's drawing of the dragon signed “K.”, Grandpa Ren's letter, a tiny plant from Nova's forge, a seed from Pico's garden, a dumpling steamer from Bo's dojo (a small reunion of the journey), the **real 4-star Dragon Orb** among the seven.
 - **Palette:** Kiko's pink `#FFC2D1`, candle gold, midnight blue, dragon green.
@@ -840,6 +848,9 @@ The scouting plan and this story plan are complementary. The story already treat
 - **The diorama stays, the friend leaves.** After rescue, the friend steps out of the memory diorama and joins the party line. The diorama remains as an empty “memory bubble” — the memory stays, the friend is free. This is a strong visual beat and costs no new mechanics.
 - **Scouting is in character.** Mira checks a path with a gadget; Bo jogs ahead with a cheerful “I'll go!”; Pico grunts and stalks off; Roku takes a slow, dignified stroll; Taro looks carefully for the little ones; Nova pings her scouter; Kiko follows her whiskers.
 - **Two different X marks.** The friends' dead-end mark is a **chalk X** — white/cream, drawn on the floor. The Hollow Wish's seal is a **red X** — painted on the door. Keep them visually distinct so a child never confuses “safe to skip” with “locked.”
+- **A third mark: the grumblin.** A successful scout can attract a harmless grumblin that blocks the friend's way back (`FRIENDS_PLAN.md` §3.7). Sora walks over and shoos it; the friend is never hurt; the dead-end mark is already earned; the door waits with “A friend needs help first!”. It is the arc's thesis as a mechanic — the climb stops until Sora helps, the exact opposite of finishing alone.
+- **Three marks, three meanings, one rule:** chalk X (floor) = safe to skip; red X (door) = locked by the story; grumblin (corridor) = a friend needs help. They must never look alike.
+- **Grumblin pacing matches the story's floors.** Floor 1 never spawns one (the tutorial stays clean). The first eligible encounter on Floor 2 is a scripted, gentle one — right where Bo learns that strength is shared. From Floor 3 on, the first scout of a floor is safe.
 - **Friends never collect.** Sora still collects every coin, carrot, radar, and orb. The echo layer is unaffected.
 - **One party roster.** The seven friends in the story are the same seven in the scouting roster. The finale shows all seven; the scouting save must not diverge from the story save.
 - **One v2 save, not two.** Both plans want a version 2 save. Merge the fields in one migration, using `FRIENDS_PLAN.md`'s canonical names: `rescuedFriends`, `settings.friendHelp`, `seenScoutTutorial`, `seenTutorial` — plus the story plan's `echoes`. Coordinate with `FRIENDS_PLAN.md` §8 before writing the schema.
@@ -882,7 +893,9 @@ The maze already has rings. The story uses them as a three-act structure on ever
 The map is generated, so story props must attach to **cell types and ring bands**, never to fixed coordinates.
 
 - **Cell types:** `start` → story gate; `exit` → memory gate; `friendCell` → memory diorama; `radarCell` → hidden memory; `orbCell` → memory shrine; `coinCells` → echo alcoves (optional); `carrotCells` → carrot patches (mandatory mission cells, not echo alcoves).
-- **Ring bands:** compute `ringIndex` relative to `rings`; outer = first third, middle = middle third, inner = last third. The ring narrative above uses these bands.
+- **Ring bands:** compute `ringIndex` relative to `rings`; outer = first third, middle = middle third, inner = last third. The ring narrative above uses these bands. **Band by thirds of the actual `rings` value — never a fixed number;** ring and sector counts are tuning and may change again.
+- **Ear bands (Floor 3):** ear cells expose `earRow` (0 = tip). Band ear props by thirds: tip / middle / base. The generator already keeps carrots out of the ear rim and the bottom row; ear props should follow the same rule.
+- **Walls are merged long paths.** The renderer now combines touching collinear wall edges into single long SVG paths (the hand-drawn look). Props stay at cell centers and never sit on wall segments.
 - **Props:** SVG symbols at cell centers, scaled to cell size. No geometry changes. No text in the map.
 - **Structural vs decorative silhouettes:**
   - **Structural:** bunny ears (already supported by `bunny: true`). Any new structural silhouette must preserve the cell graph and validation.
@@ -919,6 +932,8 @@ The party line is the seven friends below the maze (see `FRIENDS_PLAN.md`). It i
 | **Kiko** | “My whiskers say no.” |
 
 **Rules:** one line, no new mechanics, no blocking. The friends' chalk X is **white/cream on the floor**; the Hollow Wish's seal is **red on the door**. They must never look alike.
+
+**Grumblin and blocked-friend strings** are owned by `FRIENDS_PLAN.md`; they are listed in `STORY_COPY_DECK.md` §10 for drift control. See §11.16 for the story rules.
 
 ### 6.11 Accessibility and performance rules for the map
 
@@ -966,6 +981,8 @@ The party line is the seven friends below the maze (see `FRIENDS_PLAN.md`). It i
 - Add an all-echoes bonus line at each door on Floors 4–7 (Floor 3's carrot lines are mission feedback; its “all echoes” bonus is the completed code).
 
 ### Phase 4 — Map visual layer (the other agent)
+
+**Status (2026-10-25):** the geometry half landed in commit `3d0fdc0` — per-floor sector counts, bigger rings, spiral 5×9 ears, merged wall paths. The story half is still open: silhouettes, landmarks, props, ring narrative, breadcrumbs.
 
 - Implement the silhouette, landmarks, props, palette, and ambience from §6.4.
 - Keep the six landmark grammar.
@@ -1102,6 +1119,7 @@ If you decide to use Dragon Ball names directly, this is the mapping. The floor 
 | 13 | Copy budget | **P0 / P1 / P2** | Protects the short text budget; see `STORY_COPY_DECK.md` |
 | 14 | Save v2 | **One migration** | Merge with `FRIENDS_PLAN.md`; no divergent saves |
 | 15 | Voice | **Narrator first; per-character later** | Current `speak()` is single-voice; plan only |
+| 16 | Grumblin (Rev 3) | **A friendly rescue beat, never a villain** | Owned by `FRIENDS_PLAN.md`; story rules in §11.16; never Floor 1, never the finale |
 
 **No open questions remain for the story direction.** Revision 2 adds implementation-level decisions, not new story questions. The next step is the content-only pass in Phase 1, which is still a code change and should wait for the map work or a separate implementation session.
 
@@ -1117,15 +1135,15 @@ If you decide to use Dragon Ball names directly, this is the mapping. The floor 
 - **The king:** a lonely child, not a villain. The dragon was his only friend and granted the wish out of love. The true wish lets them both go.
 - **Map:** six landmark types, ring narrative (outer lie / middle memory / inner truth), visual storytelling per floor, optional echo layer using existing collectibles.
 - **Implementation:** content-only first; small UI wiring second; map visuals in parallel; finale last. One copy deck (`STORY_COPY_DECK.md`) and one save v2.
-- **Locked decisions:** original cast, sad Hollow Wish, one line per toast, Grandpa Ren alive, clean Floor 1, fourth wish added later and always available, separate map brief, glass marble + real orb, child king, one save v2.
-- **No code changed:** `STORY_PLAN.md`, `MAP_STORY_BRIEF.md`, and `STORY_COPY_DECK.md` are the only artifacts.
+- **Locked decisions:** original cast, sad Hollow Wish, one line per toast, Grandpa Ren alive, clean Floor 1, fourth wish added later and always available, separate map brief, glass marble + real orb, child king, one save v2, grumblin as a comedy rescue beat (never Floor 1, never the finale).
+- **No code changed by the story plan:** `STORY_PLAN.md`, `MAP_STORY_BRIEF.md`, and `STORY_COPY_DECK.md` are the only artifacts; the map redesign that landed in `3d0fdc0` was the other agent's work.
 
 ---
 
-## 11. Revision 2 — complete gap fixes (2026-10-24)
+## 11. Revisions 2 & 3 — gap fixes and codebase sync
 
-> **Status:** canonical where it conflicts with §1–§10. This section closes every gap from the story review. No code changed.
-> **Companion artifacts:** `STORY_COPY_DECK.md` (canonical strings), `MAP_STORY_BRIEF.md` (visual handoff), `FRIENDS_PLAN.md` (scouting; do not duplicate its schema).
+> **Status:** canonical where it conflicts with §1–§10. Revision 2 (2026-10-24) closes every gap from the story review. Revision 3 (2026-10-25) syncs the plan to the committed codebase (map redesign, `3d0fdc0`) and folds in the accepted grumblin scouting twist (§11.16). No code changed.
+> **Companion artifacts:** `STORY_COPY_DECK.md` (canonical strings), `MAP_STORY_BRIEF.md` (visual handoff), `FRIENDS_PLAN.md` (scouting and grumblins; do not duplicate its schema).
 
 ### 11.1 The 4-star fix (canon)
 
@@ -1333,6 +1351,8 @@ The roll call is the emotional payoff of the party. It happens before the wish, 
 | **P1** | Makes the story land | Radar line, wrong-answer hint, teaser, prologue, roll call, Sora's flaw lines | Ship with the mission if the text budget allows |
 | **P2** | Delight and replay | Echoes, scout banter, chapter cards, all-echo bonus, post-credits | Polish; cut first if the budget is tight |
 
+Grumblin and blocked-friend alerts (“Help {name}!”, “A friend needs help first!”, “Phew! Thanks!”) are P1 but owned by `FRIENDS_PLAN.md`; they are listed in the copy deck §10 so the decks never drift.
+
 **Max lengths:**
 
 | Slot | Max words | Max sentences | Why |
@@ -1464,6 +1484,7 @@ The roll call is the emotional payoff of the party. It happens before the wish, 
 - **The “everyone goes home” ending** is optional; no child is told their family must look a certain way.
 - **Sensitivity read:** have a children's editor or sensitivity reader review the child-king scene and the Hollow Wish's “Thank you.”
 - **No death on screen.** Grandpa Ren is alive; the king's “ending” is a release, not a death.
+- **The grumblin is comedy, not peril.** The blocked friend is safe and talking; the grumblin flees in a puff of smoke when Sora arrives; no timer, no damage; the door simply waits. It never appears on Floor 1.
 
 **Performance:**
 - Reuse SVG symbols; cap props per cell (max 3).
@@ -1526,10 +1547,10 @@ interface SaveDataV2 {
 
 | Order | Work | Owner | Gate |
 |---|---|---|---|
-| 1 | Map redesign (visual layer) | map agent | Does not block story content |
+| 1 | Map redesign (geometry) — **landed 2026-10-25, `3d0fdc0`** | map agent | Story visuals remain open |
 | 2 | Story content (floors/characters) | story/content | No engine changes |
 | 3 | Story UI wiring (toasts/completion) | story/UI | Uses existing slots |
-| 4 | Scouting (`FRIENDS_PLAN.md`) | friends agent | Feature flag; party bar reserved |
+| 4 | Scouting incl. grumblins (`FRIENDS_PLAN.md`) | friends agent | Feature flag; party bar reserved; map redesign already landed |
 | 5 | Save v2 (one migration) | shared | After scouting schema is stable |
 | 6 | Finale fourth wish + roll call | story/UI | After save v2 |
 | 7 | Voice/localization | later | After English content is frozen |
@@ -1601,7 +1622,12 @@ interface SaveDataV2 {
 | §8 | Canon table fixed |
 | §9 | New locked decisions |
 | §10 | Summary updated |
-| §11 | This section |
+| §11 | Revisions 2 & 3 |
+| §11.16 | Revision 3: codebase sync + the grumblin |
+| §4 F2 (Rev 3) | Intro no longer says “12”; coin toasts no longer reveal the count (matches the committed `PlayScreen`) |
+| §4 F3 (Rev 3) | Ears updated to the landed 5×9 spiral mini-mazes with `earRow` |
+| §6.6 (Rev 3) | Grumblin compatibility: blocked-friend beat, three-marks rule, pacing by floor |
+| §6.8 (Rev 3) | Ear bands (`earRow`) and merged-wall-path placement rules |
 
 ### 11.15 What is intentionally not in scope
 
@@ -1609,7 +1635,36 @@ interface SaveDataV2 {
 - No new blocking cutscenes, no new screens.
 - No per-character voice implementation now; plan only.
 - No localization implementation now; note the A=1 risk.
-- No change to ring counts, mission logic, item placement, or the generator.
-- No scouting implementation; `FRIENDS_PLAN.md` owns it and is blocked on the map redesign.
+- No change to the game's ring counts, mission logic, item placement, or the generator by the story plan. Ring/sector counts are the map agent's tuning; `floors.ts` is the source of truth (see §11.16's volatility rule).
+- No scouting implementation; `FRIENDS_PLAN.md` owns it. The map redesign it was blocked on landed in `3d0fdc0` (2026-10-25), so scouting can start whenever the friends agent picks it up.
+- No grumblin art, audio, or logic in the story plan; `FRIENDS_PLAN.md` owns the mechanic. This plan only fixes its story rules and voice.
 - No sensitivity review yet; schedule it before ship.
 - No final art; the map agent owns the visual layer.
+
+### 11.16 Revision 3 (2026-10-25) — the grumblin and the codebase sync
+
+**What changed in the code (commit `3d0fdc0`):**
+
+| Change | Story consequence |
+|---|---|
+| Per-floor constant `sectors`; bigger rings | Ring bands are even widths; the ring narrative (§6.7) reads more cleanly |
+| Floor 2 confirmed at 12 coins with opposite portals | Matches the plan; the counting door stays the test |
+| Floor 3 ears rebuilt as tall 5×9 spiral mini-mazes with `earRow`; carrots avoid ear rims | Ear props get a tip/middle/base band; ear lanes read as hand-drawn carrot rows |
+| The renderer merges collinear wall edges into long SVG paths | Props must stay at cell centers; never place anything on a wall segment |
+| Floor 2 coin toast hides the running count (“Dragon Coin found! Keep exploring.”) | **Copy rule:** Floor 2 copy never reveals the coin count or total — no “That's {n}…”, no “12” in the intro |
+
+**Tuning pass in flight (2026-10-25 working tree, after `3d0fdc0`):** the map agent retuned Floor 1–3 geometry — F1 12 rings / 10 sectors, F2 18 rings / 16 sectors, F3 12 rings / 10 sectors — and switched the generator to recursive division, so each new wall is one long arc or radial spoke with a single doorway. Story consequence: the long lanes make the ring narrative (§6.7) and the “bamboo slats” / “shockwave” motifs read even better; nothing else changes.
+
+**How to read volatile numbers (Revision 3 rule):** ring counts, sector counts, and dead-end minimums are **tuning**, owned by the map agent, and may change again. `src/content/floors.ts` is the single source of truth for them. The story never depends on an exact count: placements band by thirds of the actual `rings` value (§6.8), and no story string references a ring or sector number. Only the **12 coins**, the **3 carrots**, the **3 optional coins on Floors 4–7**, and the **5×9 ears** are story-load-bearing, and none of those changed.
+
+**The grumblin (accepted in `FRIENDS_PLAN.md`, folded into the story):**
+
+- **What it is in this story:** a small, grumpy mischief-maker that lives in the tower's corridors — comic, harmless, and a little loud. It is the only “bad character” the game needs, and it is never bad, only in the way.
+- **What it does:** after a friend successfully marks a dead end, a grumblin may pop up on the friend's way back. The friend is stuck behind it with a “!” — safe, visible, and talking. The door stays sealed: “A friend needs help first!” Sora walks over, the grumblin grumbles, poofs, and flees. The friend says “Phew! Thanks!” and runs back.
+- **Why it belongs in this story:** Sora's lie is “a story only counts if you finish it alone.” The grumblin makes helping unavoidable — the climb literally pauses until Sora goes to a friend. It is the same thesis as Floor 6's forge, played for comedy.
+- **Pacing (matches `FRIENDS_PLAN.md` and the story's floors):** never on Floor 1 (the tutorial stays clean); a scripted, gentle first encounter on Floor 2 — right where Bo learns strength is shared; from Floor 3 on, the first successful scout of a floor is safe, then encounters are seeded and capped (max one blocked friend, max two per floor).
+- **Canon north star:** the gag monsters of the Red Ribbon arc (Muscle Tower's creatures, Pilaf's machines) — comic obstacles, never villains. Keep it original; do not name canon characters.
+- **Voice:** it never gets a full sentence on screen. It grumbles (audio), poofs (visual), and flees. All kid-facing lines belong to the friend (“Phew! Thanks!”) and the door (“A friend needs help first!”).
+- **Copy ownership:** the grumblin's strings are owned by `FRIENDS_PLAN.md` and are listed in `STORY_COPY_DECK.md` §10 for drift control only.
+- **Hard rules:** it never blocks Sora; it never hurts anyone; there is no timer, damage, or lost progress; the friend is always reachable; the hint button always points to it; it never appears on Floor 1; it never appears in the finale (the top of the tower is the dragon's, not the grumblin's).
+- **Distinctness:** chalk X (white/cream, floor) = safe to skip; red X (red, door) = locked by the story; grumblin (a small creature in a corridor) = a friend needs help. Three marks, three meanings; they must never look alike.

@@ -456,7 +456,9 @@ export function tickScouts(state: ScoutState, level: Level): ScoutResult {
     }
 
     if (member.mode === "return") {
-      const nextIndex = Math.max(0, member.scoutIndex - 2);
+      // Come home at the same pace as the walk out: one cell per tick, so the
+      // friend strolls back instead of darting ahead of the player.
+      const nextIndex = Math.max(0, member.scoutIndex - 1);
       if (nextIndex > 0) {
         return {
           ...member,

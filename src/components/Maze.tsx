@@ -1,4 +1,4 @@
-import { useId, useMemo } from "react";
+import { useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { getCharacter, type Character } from "../content/characters";
 import type { Cell, Edge, Level, Wall } from "../generator/types";
 import { CAPSULE_RADIUS, openNeighborIds, PORTAL_OFFSET } from "../generator/generate";
@@ -228,7 +228,26 @@ interface Props {
   hintPath: number[];
   moving: boolean;
   showMoves: boolean;
+  /** How long one cell-to-cell glide lasts, so tokens slide instead of jumping. */
+  glideMs?: number;
   onCellTap: (cellId: number) => void;
+  /**
+   * A press anywhere on the board. `onPlayer` means the finger landed on Sora
+   * himself, which starts a grab-drag instead of a directional walk.
+   */
+  onMazePointerDown?: (info: {
+    direction: { x: number; y: number } | null;
+    cellId: number | null;
+    point: { x: number; y: number };
+    onPlayer: boolean;
+  }) => void;
+  /** Dragging while pressed works like a joystick; a null direction is the dead zone. */
+  onMazePointerMove?: (info: {
+    direction: { x: number; y: number } | null;
+    dragging: boolean;
+    point: { x: number; y: number };
+  }) => void;
+  onMazePointerRelease?: () => void;
   /** Friends walking with Sora; when present it replaces the single follower. */
   party?: PartyToken[] | null;
   scoutMarks?: ScoutMark[] | null;
@@ -252,7 +271,11 @@ export function Maze({
   hintPath,
   moving,
   showMoves,
+  glideMs = 150,
   onCellTap,
+  onMazePointerDown,
+  onMazePointerMove,
+  onMazePointerRelease,
   party = null,
   scoutMarks = null,
   scoutHighlight = null,
@@ -371,6 +394,113 @@ export function Maze({
     });
   }, [party, cells, playerCell]);
 
+  // ---- Press-and-drag steering -------------------------------------------------
+  const joyRef = useRef<SVGGElement | null>(null);
+  const dragRef = useRef<{
+    origin: { x: number; y: number };
+    point: { x: number; y: number };
+    dragging: boolean;
+    deadZone: number;
+    grabbing: boolean;
+  } | null>(null);
+  const [grabbing, setGrabbing] = useState(false);
+
+  const directionBetween = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy);
+    if (length < 1e-6) return null;
+    return { x: dx / length, y: dy / length };
+  };
+
+  const toLevelPoint = (svg: SVGSVGElement, clientX: number, clientY: number) => {
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    return new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+  };
+
+  /** Draw the drag ring and knob without re-rendering the maze. */
+  const paintJoystick = () => {
+    const group = joyRef.current;
+    const drag = dragRef.current;
+    if (!group) return;
+    // A grab on Sora has no joystick ring: the character himself is the handle.
+    if (!drag || !drag.dragging || drag.grabbing) {
+      group.setAttribute("opacity", "0");
+      return;
+    }
+    const dx = drag.point.x - drag.origin.x;
+    const dy = drag.point.y - drag.origin.y;
+    const length = Math.hypot(dx, dy) || 1;
+    const limit = 1.7;
+    const ratio = length > limit ? limit / length : 1;
+    group.setAttribute("transform", `translate(${drag.origin.x} ${drag.origin.y})`);
+    group.setAttribute("opacity", "1");
+    const knob = group.querySelector("[data-joystick-knob]");
+    if (knob) knob.setAttribute("transform", `translate(${dx * ratio} ${dy * ratio})`);
+  };
+
+  const handleMazePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    const svg = event.currentTarget;
+    const point = toLevelPoint(svg, event.clientX, event.clientY);
+    if (!point) return;
+
+    const ctm = svg.getScreenCTM();
+    const pixelsPerUnit = ctm ? Math.hypot(ctm.a, ctm.b) || 1 : 1;
+    // A thumb resting on the glass wobbles a few pixels; below this the press is
+    // still just a press. Small on purpose, so steering answers immediately.
+    const deadZone = 11 / pixelsPerUnit;
+    const cellEl = (event.target as Element | null)?.closest?.("[data-cell-id]");
+    const cellId = cellEl ? Number(cellEl.getAttribute("data-cell-id")) : null;
+    // A press inside Sora's own cell is a grab: that cell is the handle, so it
+    // stays comfortable to hit even on a small phone screen.
+    const onPlayer = cellId !== null && cellId === playerCell;
+    dragRef.current = { origin: point, point, dragging: false, deadZone, grabbing: onPlayer };
+    setGrabbing(onPlayer);
+    paintJoystick();
+
+    try {
+      svg.setPointerCapture(event.pointerId);
+    } catch {
+      // Older browsers only: the window listener still ends the walk.
+    }
+
+    onMazePointerDown?.({
+      direction: playerPosition
+        ? directionBetween({ x: playerPosition.cx, y: playerPosition.cy }, point)
+        : null,
+      cellId,
+      point,
+      onPlayer,
+    });
+  };
+
+  const handleMazePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const point = toLevelPoint(event.currentTarget, event.clientX, event.clientY);
+    if (!point) return;
+    drag.point = point;
+    const dx = point.x - drag.origin.x;
+    const dy = point.y - drag.origin.y;
+    if (!drag.dragging && Math.hypot(dx, dy) > drag.deadZone) drag.dragging = true;
+    paintJoystick();
+    onMazePointerMove?.({
+      direction: drag.dragging ? directionBetween(drag.origin, point) : null,
+      dragging: drag.dragging,
+      point,
+    });
+  };
+
+  const handleMazePointerUp = () => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    setGrabbing(false);
+    paintJoystick();
+    onMazePointerRelease?.();
+  };
+
   const portalCells = level.portals
     .map((portal) => cells[portal.externalCell])
     .filter(Boolean);
@@ -378,9 +508,15 @@ export function Maze({
   return (
     <svg
       className="maze-svg"
+      data-moving={moving ? "true" : "false"}
       viewBox={viewBox}
       role="group"
       aria-label={`Floor ${level.floor} maze. ${missionLabel}`}
+      onContextMenu={(event) => event.preventDefault()}
+      onPointerDown={handleMazePointerDown}
+      onPointerMove={handleMazePointerMove}
+      onPointerUp={handleMazePointerUp}
+      onPointerCancel={handleMazePointerUp}
     >
       <defs>
         <radialGradient id={paperId} cx="44%" cy="38%" r="72%">
@@ -435,6 +571,7 @@ export function Maze({
         {wallPaths.earWalls.map((d, index) => (
           <path
             key={`ear-wall-${index}`}
+            className="wall-path wall-ear"
             d={d}
             fill="none"
             stroke={INK}
@@ -498,6 +635,7 @@ export function Maze({
         {wallPaths.headWalls.map((d, index) => (
           <path
             key={`head-inner-${index}`}
+            className="wall-path wall-head"
             d={d}
             fill="none"
             stroke={INK}
@@ -740,6 +878,24 @@ export function Maze({
         />
       ) : null}
 
+      {/* The friend waiting in the maze needs a visible token, not just an aura. */}
+      {!friendRescued && friendCell && friendCell.kind !== "chamber" ? (
+        <g pointerEvents="none" data-friend-token data-friend-cell={friendCell.id}>
+          <circle
+            cx={friendCell.cx}
+            cy={friendCell.cy}
+            r="0.3"
+            fill={PAPER}
+            stroke={friend.aura}
+            strokeWidth="2.4"
+            vectorEffect="non-scaling-stroke"
+          />
+          <g transform={`translate(${friendCell.cx} ${friendCell.cy}) scale(0.0056) translate(-50 -52)`}>
+            <AvatarGlyph character={friend} />
+          </g>
+        </g>
+      ) : null}
+
       {gremlins && gremlins.length > 0 ? (
         <GremlinLayer gremlins={gremlins} cells={cells} />
       ) : null}
@@ -758,9 +914,15 @@ export function Maze({
       ))}
 
       {!party && followerSpot ? (
-        <g pointerEvents="none" data-follower-token data-follower-cell={followerCell ?? undefined}>
-          <circle cx={followerSpot.cx} cy={followerSpot.cy} r="0.3" fill={PAPER} stroke={INK} strokeWidth="2" vectorEffect="non-scaling-stroke" />
-          <g transform={`translate(${followerSpot.cx} ${followerSpot.cy}) scale(0.0056) translate(-50 -52)`}>
+        <g
+          pointerEvents="none"
+          className="token-glide"
+          data-follower-token
+          data-follower-cell={followerCell ?? undefined}
+          style={{ transform: `translate(${followerSpot.cx}px, ${followerSpot.cy}px)` }}
+        >
+          <circle r="0.3" fill={PAPER} stroke={INK} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+          <g transform="scale(0.0056) translate(-50 -52)">
             <AvatarGlyph character={friend} />
           </g>
         </g>
@@ -778,7 +940,8 @@ export function Maze({
           <g
             key={`party-${spot.member.characterId}`}
             pointerEvents="none"
-            className={`party-token ${isOut ? "is-out" : ""} ${isBlocked ? "is-blocked" : ""}`}
+            className={`party-token token-glide ${isOut ? "is-out" : ""} ${isBlocked ? "is-blocked" : ""}`}
+            style={{ transform: `translate(${spot.cell.cx}px, ${spot.cell.cy}px)` }}
             data-party-member={spot.member.characterId}
             data-party-cell={spot.member.cellId}
             data-party-mode={spot.member.mode}
@@ -793,8 +956,6 @@ export function Maze({
           >
             {isOut ? (
               <circle
-                cx={spot.cell.cx}
-                cy={spot.cell.cy}
                 r="0.34"
                 fill="none"
                 stroke={character.aura}
@@ -805,22 +966,17 @@ export function Maze({
               />
             ) : null}
             <circle
-              cx={spot.cell.cx}
-              cy={spot.cell.cy}
               r="0.27"
               fill={PAPER}
               stroke={INK}
               strokeWidth="2"
               vectorEffect="non-scaling-stroke"
             />
-            <g transform={`translate(${spot.cell.cx} ${spot.cell.cy}) scale(0.0052) translate(-50 -52)`}>
+            <g transform="scale(0.0052) translate(-50 -52)">
               <AvatarGlyph character={character} />
             </g>
             {isBlocked ? (
-              <g
-                className="party-blocked-alert"
-                transform={`translate(${spot.cell.cx + 0.3} ${spot.cell.cy - 0.36})`}
-              >
+              <g className="party-blocked-alert" transform="translate(0.3 -0.36)">
                 <circle
                   r="0.15"
                   fill="#FFC93C"
@@ -844,10 +1000,17 @@ export function Maze({
       })}
 
       {playerPosition ? (
-        <g pointerEvents="none" data-player-token data-player-cell={playerCell}>
+        <g
+          pointerEvents="none"
+          className={`token-glide player-token ${grabbing ? "is-grabbed" : ""}`}
+          data-player-token
+          data-player-cell={playerCell}
+          style={{
+            transform: `translate(${playerPosition.cx}px, ${playerPosition.cy}px)`,
+            transitionDuration: `${glideMs}ms`,
+          }}
+        >
           <circle
-            cx={playerPosition.cx}
-            cy={playerPosition.cy}
             r="0.44"
             fill="none"
             stroke={player.aura}
@@ -856,15 +1019,34 @@ export function Maze({
             className="player-halo"
             vectorEffect="non-scaling-stroke"
           />
-          <g transform={`translate(${playerPosition.cx} ${playerPosition.cy})`}>
-            <ellipse cx="0" cy="0.38" rx="0.27" ry="0.08" fill="#3A2412" opacity="0.18" />
-            <circle r="0.37" fill={PAPER} stroke={INK} strokeWidth="2.4" vectorEffect="non-scaling-stroke" />
-            <g transform="scale(0.007) translate(-50 -52)">
-              <AvatarGlyph character={player} />
-            </g>
+          <ellipse cx="0" cy="0.38" rx="0.27" ry="0.08" fill="#3A2412" opacity="0.18" />
+          <circle r="0.37" fill={PAPER} stroke={INK} strokeWidth="2.4" vectorEffect="non-scaling-stroke" />
+          <g transform="scale(0.007) translate(-50 -52)">
+            <AvatarGlyph character={player} />
           </g>
         </g>
       ) : null}
+
+      <g ref={joyRef} className="maze-joystick" pointerEvents="none" opacity="0">
+        <circle
+          r="2"
+          fill={PAPER}
+          fillOpacity="0.35"
+          stroke={accent}
+          strokeWidth="2"
+          strokeDasharray="0.18 0.14"
+          vectorEffect="non-scaling-stroke"
+        />
+        <circle
+          data-joystick-knob
+          r="0.72"
+          fill={accent}
+          fillOpacity="0.85"
+          stroke={INK}
+          strokeWidth="2"
+          vectorEffect="non-scaling-stroke"
+        />
+      </g>
 
       {cells.map((cell) => (
         <path

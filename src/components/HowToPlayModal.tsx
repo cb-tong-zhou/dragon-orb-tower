@@ -19,11 +19,12 @@ export function HowToPlayModal({ onClose }: Props) {
               <IconMap size={24} />
             </span>
             <div>
-              <strong>Tap a path beside Sora</strong>
+              <strong>Drag Sora, or press a direction</strong>
               <p>
-                Your hero walks to the next fork, then waits. Taps far away are
-                ignored, so you choose every turn yourself. Every visit builds a
-                fresh maze.
+                Put a finger on Sora and drag: he follows your thumb along the
+                corridor. You can also press anywhere else on the maze to walk
+                that way and slide to steer. A quick tap is one small step.
+                Every visit builds a fresh maze.
               </p>
             </div>
           </div>

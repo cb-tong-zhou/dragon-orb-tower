@@ -8,7 +8,7 @@ import type { GremlinToken } from "./encounters";
 import type { ScoutHighlight, ScoutMark } from "./scouting";
 
 export const AUTO_SCOUT_DELAY_MS = 1200;
-export const SCOUT_TICK_MS = 110;
+export const SCOUT_TICK_MS = 150;
 
 export interface UseScoutDirectorOptions {
   enabled: boolean;

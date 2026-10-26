@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { CellKind } from "./types";
-import { localCorridor, localWalkPath } from "./graph";
+import {
+  localCorridor,
+  localWalkPath,
+  neighborToward,
+  straightestOpenNeighbor,
+} from "./graph";
 import { testCell, testEdge, testLevel } from "../game/testLevel";
 
 /**
@@ -103,5 +108,103 @@ describe("localWalkPath", () => {
     const level = chainLevel(3);
     expect(localWalkPath(level, 2, 0)).toEqual([1, 0]);
     expect(localWalkPath(level, 2, 2)).toBeNull();
+  });
+});
+
+/**
+ * A corridor 0-1-2 running along +x, a side branch 1-3 running along +y, and a
+ * dead end at 2-4. Holding a heading should glide along the corridor and stop
+ * at the dead end instead of turning down the side branch.
+ */
+function bendLevel() {
+  const cells = [
+    testCell(0, "start", 0, 0),
+    testCell(1, "normal", 1, 0),
+    testCell(2, "normal", 2, 0),
+    testCell(3, "normal", 1, 1),
+    testCell(4, "normal", 2.5, 0.5),
+  ];
+  const edges = [
+    testEdge(0, 1),
+    testEdge(1, 2),
+    testEdge(1, 3),
+    testEdge(2, 4),
+  ];
+  return testLevel({ cells, edges });
+}
+
+describe("neighborToward", () => {
+  it("steps toward the pressed direction", () => {
+    const level = bendLevel();
+    expect(neighborToward(level, 1, { x: 3, y: 0.4 })).toBe(2);
+    expect(neighborToward(level, 1, { x: 0.8, y: 3 })).toBe(3);
+  });
+
+  it("turns instead of doubling back when the cell behind is known", () => {
+    const level = bendLevel();
+    expect(neighborToward(level, 1, { x: 0, y: 0 }, 0)).toBe(3);
+  });
+
+  it("stops at a dead end instead of bouncing back", () => {
+    const level = chainLevel(2);
+    expect(neighborToward(level, 1, { x: 3, y: 0.2 }, 0)).toBeNull();
+  });
+
+  it("can still step back when nothing has been walked yet", () => {
+    const level = chainLevel(2);
+    expect(neighborToward(level, 1, { x: 0.2, y: 0 })).toBe(0);
+  });
+
+  it("ignores a press on Sora's own centre", () => {
+    const level = bendLevel();
+    expect(neighborToward(level, 1, { x: 1, y: 0 })).toBeNull();
+  });
+});
+
+describe("straightestOpenNeighbor", () => {
+  it("keeps gliding along a corridor", () => {
+    const level = bendLevel();
+    expect(straightestOpenNeighbor(level, 1, { x: 1, y: 0 })).toBe(2);
+  });
+
+  it("ignores a perpendicular side branch at a junction", () => {
+    const level = bendLevel();
+    expect(straightestOpenNeighbor(level, 1, { x: 0, y: 1 })).toBe(3);
+    expect(straightestOpenNeighbor(level, 2, { x: 1, y: 0 })).toBe(4);
+  });
+
+  it("stops at a dead end instead of turning back", () => {
+    const level = bendLevel();
+    expect(straightestOpenNeighbor(level, 4, { x: 1, y: 0 }, { avoid: 2 })).toBeNull();
+  });
+
+  it("follows a tight corner when the corridor is one-way", () => {
+    const cells = [
+      testCell(0, "start", 0, 0),
+      testCell(1, "normal", 1, 0),
+      testCell(2, "normal", 1, 1),
+    ];
+    const level = testLevel({ cells, edges: [testEdge(0, 1), testEdge(1, 2)] });
+    expect(straightestOpenNeighbor(level, 1, { x: 1, y: 0 }, { avoid: 0 })).toBe(2);
+  });
+
+  it("stops at a fork with no straight continuation", () => {
+    const cells = [
+      testCell(0, "start", 0, 0),
+      testCell(1, "normal", 1, 0),
+      testCell(2, "normal", 1, 1),
+      testCell(3, "normal", 1, -1),
+    ];
+    const level = testLevel({
+      cells,
+      edges: [testEdge(0, 1), testEdge(1, 2), testEdge(1, 3)],
+    });
+    expect(straightestOpenNeighbor(level, 1, { x: 1, y: 0 }, { avoid: 0 })).toBeNull();
+  });
+
+  it("never walks into a wall", () => {
+    const cells = [testCell(0, "start", 0, 0), testCell(1, "normal", 1, 0)];
+    const level = testLevel({ cells, edges: [testEdge(0, 1, false)] });
+    expect(straightestOpenNeighbor(level, 0, { x: 1, y: 0 })).toBeNull();
   });
 });

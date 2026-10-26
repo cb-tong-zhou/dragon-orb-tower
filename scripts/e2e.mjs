@@ -28,23 +28,30 @@ async function contextWithSave(save, viewport = { width: 1280, height: 900 }) {
 }
 
 async function playerCell(page) {
-  return Number(await page.locator("[data-player-token]").getAttribute("data-player-cell"));
+  const token = page.locator("[data-player-token]");
+  if ((await token.count()) === 0) return -1;
+  return Number(await token.getAttribute("data-player-cell"));
 }
 
-async function waitForWalkEnd(page) {
-  let last = null;
-  let stable = 0;
-  for (let i = 0; i < 160; i++) {
-    const current = await playerCell(page);
-    if (current === last) stable += 1;
-    else {
-      stable = 0;
-      last = current;
-    }
-    if (stable >= 3) return current;
-    await page.waitForTimeout(100);
+async function isMoving(page) {
+  return (await page.getAttribute(".maze-svg", "data-moving")) === "true";
+}
+
+async function waitForWalkEnd(page, timeoutMs = 12000) {
+  // The maze reports its own walk state, so a walk is finished when that flag
+  // drops back to false. Give the state a moment to flip to true first.
+  const deadline = Date.now() + timeoutMs;
+  const settle = Date.now() + 300;
+  while (Date.now() < settle) {
+    if (await isMoving(page)) break;
+    await page.waitForTimeout(25);
   }
-  return last;
+  while (Date.now() < deadline) {
+    if ((await page.locator(".complete-card").count()) > 0) return playerCell(page);
+    if (!(await isMoving(page))) return playerCell(page);
+    await page.waitForTimeout(25);
+  }
+  return playerCell(page);
 }
 
 async function tapCell(page, cellId) {
@@ -130,12 +137,50 @@ async function routeInfo(page, target) {
 }
 
 /**
- * Walk to a target under the local-only control rules. Each tap advances one
- * corridor (or one step at a fork). Mid-corridor targets such as coins are
- * collected in passing; the walk succeeds once Sora reaches or passes them.
+ * The first step a press on `target` takes, mirroring neighborToward: the open
+ * neighbour closest to the direction from Sora to the pressed cell.
  */
-async function walkTo(page, target, attempts = 200) {
+async function firstStepToward(page, target) {
+  return page.evaluate((targetCell) => {
+    const level = window.__dragonTowerLevel;
+    const from = Number(
+      document.querySelector("[data-player-token]").getAttribute("data-player-cell"),
+    );
+    const origin = level.cells[from];
+    const goal = level.cells[targetCell];
+    const dx = goal.cx - origin.cx;
+    const dy = goal.cy - origin.cy;
+    const length = Math.hypot(dx, dy) || 1;
+    const neighbours = [];
+    for (const edge of level.edges) {
+      if (!edge.open) continue;
+      if (edge.a === from) neighbours.push(edge.b);
+      else if (edge.b === from) neighbours.push(edge.a);
+    }
+    let best = null;
+    let bestScore = -Infinity;
+    for (const id of neighbours) {
+      const cell = level.cells[id];
+      const segment = Math.hypot(cell.cx - origin.cx, cell.cy - origin.cy) || 1;
+      const score =
+        ((cell.cx - origin.cx) / segment) * (dx / length) +
+        ((cell.cy - origin.cy) / segment) * (dy / length);
+      if (score > bestScore) {
+        bestScore = score;
+        best = id;
+      }
+    }
+    return best;
+  }, target);
+}
+
+/**
+ * Walk to a target one press at a time: press the next cell on the shortest
+ * route, which is exactly the direction the press control turns into a step.
+ */
+async function walkTo(page, target, attempts = 900) {
   for (let attempt = 0; attempt < attempts; attempt++) {
+    if ((await page.locator(".complete-card").count()) > 0) return target;
     const current = await playerCell(page);
     if (current === target) return current;
 
@@ -144,10 +189,11 @@ async function walkTo(page, target, attempts = 200) {
       throw new Error(`No route from ${current} to ${target}`);
     }
 
-    const tapTarget = before.localStop ?? before.step;
-    const after = await tapCell(page, tapTarget);
-    const info = await routeInfo(page, target);
-    if (info.distance > before.distance) return after;
+    const after = await tapCell(page, before.step);
+    if ((await page.locator(".complete-card").count()) > 0) return target;
+    if (after === current) {
+      throw new Error(`Sora did not move from ${current} toward ${target}`);
+    }
   }
   throw new Error(`Could not reach cell ${target}; stopped at ${await playerCell(page)}`);
 }
@@ -155,9 +201,11 @@ async function walkTo(page, target, attempts = 200) {
 /** Walk to a target with Easy walking on: one tap follows the whole route. */
 async function walkToEasy(page, target, attempts = 40) {
   for (let attempt = 0; attempt < attempts; attempt++) {
+    if ((await page.locator(".complete-card").count()) > 0) return target;
     const current = await playerCell(page);
     if (current === target) return current;
     const after = await tapCell(page, target);
+    if ((await page.locator(".complete-card").count()) > 0) return target;
     if (after === target) return after;
   }
   throw new Error(`Could not reach cell ${target}; stopped at ${await playerCell(page)}`);
@@ -349,51 +397,56 @@ function findDeadEndBranch(minPathLength = 2) {
   if (junction === -1) throw new Error("No junction found on Floor 1");
   await walkTo(page, junction);
 
-  // Corridor stop: a mid-corridor tap walks to the end of the corridor.
+  // One step per press: a press on a mid-corridor cell moves exactly one cell,
+  // toward the direction of the press (never the whole corridor).
   let stopPlan = null;
   for (const cell of level.cells) {
     if (avoid.has(cell.id)) continue;
     const info = await routeInfo(page, cell.id);
-    if (info.localStop !== null && info.localStop !== cell.id && info.distance >= 1) {
-      stopPlan = { target: cell.id, stop: info.localStop };
+    if (info.localStop !== null && info.step !== null && info.step !== cell.id) {
+      stopPlan = { target: cell.id, expected: await firstStepToward(page, cell.id) };
       break;
     }
   }
-  if (!stopPlan) throw new Error("No corridor-stop target found on Floor 1");
+  if (!stopPlan) throw new Error("No walkable press target found on Floor 1");
+  const beforeStepCell = await playerCell(page);
   const stopCell = await tapCell(page, stopPlan.target);
-  console.log("floor 1 corridor stop", {
+  console.log("floor 1 one-step walk", {
+    from: beforeStepCell,
     target: stopPlan.target,
-    expected: stopPlan.stop,
+    expected: stopPlan.expected,
     actual: stopCell,
   });
-  if (stopCell !== stopPlan.stop) {
-    throw new Error(`Corridor stop mismatch: expected ${stopPlan.stop}, got ${stopCell}`);
+  if (stopCell !== stopPlan.expected) {
+    throw new Error(`One-step walk mismatch: expected ${stopPlan.expected}, got ${stopCell}`);
   }
 
-  // Anti-auto-path: a tap beyond a fork must not move Sora at all.
+  // The press direction rules: a press beyond a fork still takes exactly one
+  // step toward the thumb, without pathfinding the whole way.
   let farPlan = null;
   for (const cell of level.cells) {
     if (avoid.has(cell.id) || cell.id === stopPlan.target) continue;
     const info = await routeInfo(page, cell.id);
     if (info.localStop === null && info.distance >= 2) {
-      farPlan = { target: cell.id };
+      farPlan = { target: cell.id, expected: await firstStepToward(page, cell.id) };
       break;
     }
   }
   if (!farPlan) throw new Error("No beyond-fork target found on Floor 1");
   const beforeFarTap = await playerCell(page);
   const afterFarTap = await tapCell(page, farPlan.target);
-  if (afterFarTap !== beforeFarTap) {
+  console.log("floor 1 distant press", {
+    from: beforeFarTap,
+    target: farPlan.target,
+    expected: farPlan.expected,
+    actual: afterFarTap,
+  });
+  if (afterFarTap !== farPlan.expected) {
     throw new Error(
-      `Distant tap on ${farPlan.target} moved Sora from ${beforeFarTap} to ${afterFarTap} without Easy walking`,
+      `Distant press should take one step to ${farPlan.expected}, went from ${beforeFarTap} to ${afterFarTap}`,
     );
   }
-  await page.waitForSelector(".toast", { timeout: 2500 });
-  const farToast = await page.locator(".toast").innerText();
-  if (!/right next to Sora/i.test(farToast)) {
-    throw new Error(`Missing far-tap feedback, got: ${farToast}`);
-  }
-  console.log("floor 1 far tap ignored", { target: farPlan.target, toast: farToast });
+
 
   await page.getByRole("button", { name: /^Hint$/ }).click();
   await page.waitForSelector(".hint-path", { timeout: 3000 });

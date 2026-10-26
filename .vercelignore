@@ -1,0 +1,12 @@
+.codegraph/
+.codegraph
+preview/
+screenshots/
+node_modules/
+dist/
+.vercel/
+.vercel
+.git/
+.env.local
+.env.*
+*.log

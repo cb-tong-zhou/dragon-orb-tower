@@ -714,9 +714,32 @@ p {
   width: 100%;
   height: 100%;
   max-height: 100%;
-  touch-action: manipulation;
+  /* Hold-to-walk: the finger stays on the maze, so the browser must not turn
+     that press into a scroll or a zoom. */
+  touch-action: none;
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Tokens slide between cells instead of teleporting. The duration matches the
+   walk cadence (150ms per cell, 100ms with Easy walking), so consecutive steps
+   chain into one continuous glide. */
+.token-glide {
+  transition: transform 150ms linear;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .token-glide {
+    transition: none;
+  }
+}
+
+/* Grabbed by the finger: the halo thickens so the handle is obvious. */
+.player-token.is-grabbed .player-halo {
+  stroke-width: 5;
+  opacity: 0.9;
 }
 
 .cell-hit {
@@ -757,6 +780,8 @@ p {
   position: absolute;
   left: 50%;
   bottom: 12px;
+  /* A message must never swallow a press aimed at the maze. */
+  pointer-events: none;
   transform: translateX(-50%);
   z-index: 6;
   max-width: min(92%, 520px);

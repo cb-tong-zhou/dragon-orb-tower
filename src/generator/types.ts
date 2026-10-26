@@ -124,8 +124,12 @@ export interface FloorConfig {
   coinCount?: number;
   code?: CodePuzzle;
   bunny?: boolean;
-  /** How often the growing tree follows its newest branch (0-1). */
-  newestChance?: number;
+  /**
+   * Which carving strategy builds this floor's passages. "auto" (the default)
+   * picks one deterministically from the seed, so different floors get a
+   * different feel while replays stay reproducible.
+   */
+  generator?: "divide" | "ring" | "growing" | "hybrid" | "auto";
   /** Absolute minimum dead ends for this floor. */
   deadEndMin?: number;
   portalStyle?: "auto" | "opposite";

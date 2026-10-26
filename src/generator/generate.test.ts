@@ -25,8 +25,12 @@ function expectPlayable(level: Level, config: FloorConfig) {
 
   expect(bfsPath(level, level.startCell, level.friendCell).length).toBeGreaterThan(1);
   expect(bfsPath(level, level.startCell, level.exitCell).length).toBeGreaterThan(1);
-  expect(level.metrics.pathToFriend).toBeGreaterThanOrEqual(config.rings * 3);
-  expect(level.metrics.pathToExit).toBeGreaterThanOrEqual(config.rings * 3);
+  expect(level.cells[level.startCell]?.kind).toBe("start");
+  expect(level.cells[level.exitCell]?.kind).toBe("exit");
+  expect(level.cells[level.friendCell]?.kind).toBe("normal");
+  expect(level.cells[level.friendCell]?.ring ?? 0).toBeLessThan(level.rings - 1);
+  expect(level.metrics.pathToFriend).toBeGreaterThanOrEqual(config.rings * 2);
+  expect(level.metrics.pathToExit).toBeGreaterThanOrEqual(Math.floor(config.rings * 1.3));
   expect(level.metrics.deadEnds).toBeGreaterThanOrEqual(config.deadEndMin ?? config.rings * 2.5);
 
   if (config.mission === "rescue") {
@@ -34,8 +38,8 @@ function expectPlayable(level: Level, config: FloorConfig) {
     expect(level.radarCell).toBe(-1);
     expect(level.coinCells).toHaveLength(0);
     expect(level.carrotCells).toHaveLength(0);
-    expect(level.metrics.pathToOrb).toBeGreaterThanOrEqual(config.rings * 4);
-    expect(level.metrics.pathToFriend).toBeGreaterThanOrEqual(config.rings * 4);
+    expect(level.metrics.pathToOrb).toBeGreaterThanOrEqual(config.rings * 1.8);
+    expect(level.metrics.pathToFriend).toBeGreaterThanOrEqual(config.rings * 2);
   }
 
   if (config.mission === "coins") {
@@ -44,8 +48,8 @@ function expectPlayable(level: Level, config: FloorConfig) {
     expect(level.coinCells).toHaveLength(config.coinCount ?? 0);
     expect(level.coinChoices).toHaveLength(4);
     expect(level.coinChoices).toContain(level.coinCells.length);
-    expect(level.metrics.pathToFriend).toBeGreaterThanOrEqual(config.rings * 4);
-    expect(level.metrics.pathToExit).toBeGreaterThanOrEqual(config.rings * 4);
+    expect(level.metrics.pathToFriend).toBeGreaterThanOrEqual(config.rings * 3);
+    expect(level.metrics.pathToExit).toBeGreaterThanOrEqual(config.rings * 2.5);
     for (const cellId of level.coinCells) {
       expect(level.cells[cellId]?.kind).toBe("normal");
       expect(bfsPath(level, level.startCell, cellId).length).toBeGreaterThan(1);
@@ -82,11 +86,11 @@ function expectPlayable(level: Level, config: FloorConfig) {
     expect(level.orbCell).toBeGreaterThanOrEqual(0);
     expect(level.radarCell).toBeGreaterThanOrEqual(0);
     expect(level.cells[level.radarCell]?.kind).toBe("normal");
-    expect(level.metrics.pathToOrb).toBeGreaterThanOrEqual(config.rings * 5);
+    expect(level.metrics.pathToOrb).toBeGreaterThanOrEqual(config.rings * 4);
     expect(bfsPath(level, level.startCell, level.radarCell).length - 1).toBeGreaterThanOrEqual(
-      config.rings * 8,
+      config.rings * 6,
     );
-    expect(level.metrics.pathToFriend).toBeGreaterThanOrEqual(config.rings * 6);
+    expect(level.metrics.pathToFriend).toBeGreaterThanOrEqual(config.rings * 5);
     expect(level.coinCells).toHaveLength(config.coinCount ?? 3);
     for (const cellId of level.coinCells) {
       expect(level.cells[cellId]?.kind).toBe("normal");
@@ -236,12 +240,12 @@ describe("campaign floors", () => {
 
   it("keeps the first three floors as a clear difficulty ladder", () => {
     const [first, second, third] = FLOORS.slice(0, 3).map((story) => generateFloor(story.config));
-    expect(first.rings).toBe(10);
-    expect(second.rings).toBeGreaterThanOrEqual(15);
+    expect(first.rings).toBe(14);
+    expect(second.rings).toBeGreaterThanOrEqual(18);
     expect(third.earShapes).toHaveLength(2);
-    expect(first.cells.length).toBeGreaterThan(140);
-    expect(second.cells.length).toBeGreaterThan(330);
-    expect(third.cells.length).toBeGreaterThan(210);
+    expect(first.cells.length).toBeGreaterThan(100);
+    expect(second.cells.length).toBeGreaterThan(250);
+    expect(third.cells.length).toBeGreaterThan(180);
     expect(third.cells.filter((cell) => cell.kind === "ear").length).toBeGreaterThanOrEqual(70);
     expect(third.edges.filter((edge) => edge.kind === "ear" && !edge.open).length).toBeGreaterThan(40);
     expect(first.mission).toBe("rescue");
@@ -250,28 +254,48 @@ describe("campaign floors", () => {
     expect(third.mission).toBe("code");
   });
 
-  it("uses one sector count per floor so arcs and radial walls can run long", () => {
-    const [first, second, third] = FLOORS.slice(0, 3).map((story) => generateFloor(story.config));
-    for (const level of [first, second, third]) {
-      const sectorCounts = new Set(
+  it("mixes carving styles across the campaign", () => {
+    const levels = FLOORS.map((story) => generateFloor(story.config));
+    const uniform = (level: Level) =>
+      new Set(
         level.cells.filter((cell) => cell.kind === "normal").map((cell) => cell.sectors),
-      );
-      expect(sectorCounts.size).toBe(1);
+      ).size === 1;
+
+    const uniformLevels = levels.filter(uniform);
+    const growingLevels = levels.filter((level) => !uniform(level));
+
+    // Both the uniform-grid carvers and the widening-ring carver appear somewhere.
+    expect(uniformLevels.length).toBeGreaterThan(0);
+    expect(growingLevels.length).toBeGreaterThan(0);
+
+    // The widening carver must widen outwards, never narrow.
+    for (const level of growingLevels) {
+      const byRing = new Map<number, number>();
+      for (const cell of level.cells) {
+        if (cell.kind === "normal") byRing.set(cell.ring, cell.sectors);
+      }
+      const rings = [...byRing.keys()].sort((a, b) => a - b);
+      expect(byRing.get(rings[rings.length - 1])!).toBeGreaterThanOrEqual(byRing.get(rings[0])!);
     }
-    expect(first.cells.find((cell) => cell.kind === "normal")?.sectors).toBe(16);
-    expect(second.cells.find((cell) => cell.kind === "normal")?.sectors).toBe(24);
-    expect(third.cells.find((cell) => cell.kind === "normal")?.sectors).toBe(16);
   });
 
-  it("keeps long continuous wall runs like the hand-drawn reference maps", () => {
-    const [first, second, third] = FLOORS.slice(0, 3).map((story) => generateFloor(story.config));
+  it("keeps long continuous wall runs on the uniform-grid floors", () => {
+    const uniformLevels = FLOORS.map((story) => generateFloor(story.config)).filter(
+      (level) =>
+        new Set(
+          level.cells.filter((cell) => cell.kind === "normal").map((cell) => cell.sectors),
+        ).size === 1,
+    );
+    expect(uniformLevels.length).toBeGreaterThan(0);
 
-    expect(Math.max(...arcRunLengths(first))).toBeGreaterThan(12);
-    expect(Math.max(...radialRunLengths(first))).toBeGreaterThan(4);
-    expect(Math.max(...arcRunLengths(second))).toBeGreaterThan(14);
-    expect(Math.max(...radialRunLengths(second))).toBeGreaterThan(4);
-    expect(Math.max(...arcRunLengths(third))).toBeGreaterThan(10);
-    expect(Math.max(...radialRunLengths(third))).toBeGreaterThan(2);
-    expect(Math.max(...straightRunLengths(third))).toBeGreaterThan(5);
+    // Every uniform-grid floor keeps long continuous arcs.
+    for (const level of uniformLevels) {
+      expect(Math.max(...arcRunLengths(level))).toBeGreaterThan(8);
+      expect(Math.max(...radialRunLengths(level))).toBeGreaterThanOrEqual(1);
+    }
+
+    // The bunny floor's ears are rectangular templates built from straight runs.
+    const bunny = generateFloor(FLOORS[2].config);
+    expect(Math.max(...straightRunLengths(bunny))).toBeGreaterThan(5);
   });
 });

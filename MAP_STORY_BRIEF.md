@@ -1,9 +1,10 @@
 # Map Story Brief — Dragon Orb Tower
 
 **For:** the agent modifying the map visuals.
-**From:** the story plan in `STORY_PLAN.md` (approved 2026-10-24; Revision 2).
+**From:** the story plan in `STORY_PLAN.md` (approved 2026-10-24; Revisions 2 & 3).
 **Companion:** `STORY_COPY_DECK.md` (canonical strings; the map must not duplicate them).
 **Rule:** this is a **visual brief only**. Do not put story text in the map, and do not change ring counts, mission logic, item placement, or generator behavior.
+**Current state (2026-10-25, commit `3d0fdc0` + a tuning pass in flight):** the maze geometry redesign has landed — per-floor constant sector counts, bigger rings, Floor 3's ears rebuilt as tall 5×9 spiral mini-mazes, and the renderer now merges collinear wall edges into long hand-drawn paths. A further tuning pass is reworking ring/sector counts and switching the generator to recursive division, so each wall is one long arc or radial spoke with a single doorway; **`src/content/floors.ts` is the source of truth for those numbers** — never hard-code a ring or sector count in art. The **story visuals described below are still to build**. Scouting (with grumblins) is accepted in `FRIENDS_PLAN.md` but not implemented.
 
 ---
 
@@ -47,7 +48,7 @@ The player should be able to recognize six things by shape alone:
 ### Floor 2 — Bo's Dumpling Dojo
 
 - **Silhouette:** a steamer basket — concentric bamboo rings with a domed lid at the center.
-- **Rings:** 15 (current config); bamboo slats make natural corridors.
+- **Rings:** 18 (tuned; `floors.ts` is the source of truth); bamboo slats make natural corridors.
 - **Landmarks:** dojo gate (exit), kitchen (friend), trophy cabinet (orb), twelve place settings (coins), giant bell, training dummies.
 - **Props:** chopstick bridges, steam clouds, dumpling baskets, rice scoop, scoreboard with no numbers, tiny apron, a child's paper crown on one place setting.
 - **Palette:** Bo orange `#FFB347`, bamboo green, cream, ink.
@@ -57,10 +58,11 @@ The player should be able to recognize six things by shape alone:
 
 ### Floor 3 — Pico's Bunny Garden
 
-- **Silhouette:** bunny head + two long ears (already supported by `bunny: true`).
-- **Rings:** 10 (current config); the ears are long carrot rows; the head is the garden.
+- **Silhouette:** bunny head + two tall ears (already supported by `bunny: true`).
+- **Rings:** 12 (tuned; `floors.ts` is the source of truth). The ears are now tall **5×9 spiral mini-mazes** — one nested U-lane per ear, like hand-drawn carrot rows. Ear cells expose `earRow` (0 at the tip), so ear props can band by tip / middle / base.
 - **Landmarks:** greenhouse (friend), three carrot patches (carrots), ladybug gate (exit), carrot-patch shrine (orb), Pico's meditation stone.
 - **Props:** giant carrots, watering cans, seed packets, scarecrow with a ladybug on its hat and a child's paper crown on its head, moon disc, vines.
+- **Placement note:** the generator keeps carrots out of the ear rim, the ear tips, and the ear bottom rows — ear props should follow the same rule so nothing sits on the ear border.
 - **Palette:** Pico green `#B9E769`, carrot orange, moon cream, deep green ink.
 - **Ambience:** crickets, leaves, a slow drip, a ladybug's tiny chime, a warm wind that smells of the sky.
 - **Echoes:** the 3 carrots are the mandatory story echoes. Each carrot frees a named villager: **Bram the baker (2)**, **Uma the drummer (21)**, **Gus the gardener (7)**. Their initials spell **BUG**, the ladybug gate's word. No coin layer (current `coinCount: 0`).
@@ -69,7 +71,7 @@ The player should be able to recognize six things by shape alone:
 ### Floor 4 — Roku's Sky Library
 
 - **Silhouette:** a floating island shaped like an open book, with a planetarium dome.
-- **Rings:** 11 (current config); bookshelf rings and cloud bridges.
+- **Rings:** 11 (tuned; `floors.ts` is the source of truth); bookshelf rings and cloud bridges.
 - **Landmarks:** reading nook (friend), giant telescope, planetarium dome, the pedestal with the **real 4-star Dragon Orb** (orb), the book with the radar lens, archive gate (exit).
 - **Props:** floating books, star charts, Grandpa Ren's fishing rod, a photo of Grandpa as a boy, cold tea, constellation projector, a child's paper crown on a high shelf, a book titled *The King Who Wouldn't Say Goodnight*, Sora's glass 4-star marble (token prop, glowing near the pedestal).
 - **Palette:** Roku mint `#A8E6CF`, midnight blue, paper cream, gold star.
@@ -80,7 +82,7 @@ The player should be able to recognize six things by shape alone:
 ### Floor 5 — Taro's Sandcastle
 
 - **Silhouette:** a sandcastle — concentric battlements, a keep at the center, a drawbridge.
-- **Rings:** 11 (current config); the rings are castle walls; the moat is a dry channel.
+- **Rings:** 11 (tuned; `floors.ts` is the source of truth); the rings are castle walls; the moat is a dry channel.
 - **Landmarks:** gatehouse (friend), sandbox (radar), keep (orb), drawbridge (exit), three toy alcoves (coins), a kite stuck in a tower.
 - **Props:** sand buckets, wooden sword, child's drawing of Taro, seashell, wind streaks, tiny flags, half-buried wagon, a child's paper crown half-buried in the sand.
 - **Palette:** Taro sand `#FFD9A0`, warm brown, sky blue, sunset orange.
@@ -91,7 +93,7 @@ The player should be able to recognize six things by shape alone:
 ### Floor 6 — Nova's Star Forge
 
 - **Silhouette:** a giant gear with a star at its center — or a star-shaped forge with gear teeth.
-- **Rings:** 12 (current config); the rings are gear teeth; molten channels glow.
+- **Rings:** 12 (tuned; `floors.ts` is the source of truth); the rings are gear teeth; molten channels glow.
 - **Landmarks:** cooling room (friend), anvil, toolbench (radar), forge heart (orb), blast door (exit), three memory alcoves (coins), a dark star that lights up as the player collects.
 - **Props:** broken scouter, royal seal, unsent letter, hammer, tongs, sparks, cooling rack, tiny plant in a tin can (Nova's secret softness), a tiny paper crown on the anvil, a dragon claw mark scored into the cooling-room wall.
 - **Palette:** Nova pink `#FF9EC4`, forge orange, steel gray, scouter green, deep navy.
@@ -102,7 +104,7 @@ The player should be able to recognize six things by shape alone:
 ### Floor 7 — Kiko's Wish Room
 
 - **Silhouette:** a coiled dragon around seven pillars, with the altar at the center.
-- **Rings:** 12 (current config); the rings are the dragon's coils; the pillars are story markers.
+- **Rings:** 12 (tuned; `floors.ts` is the source of truth); the rings are the dragon's coils; the pillars are story markers.
 - **Landmarks:** wish well (friend), altar (orb), constellation ceiling, dragon-mouth door (exit), three memory alcoves (coins), seven pillars with tiny carvings of the previous floors.
 - **Props:** candles, the king's paper crown on the altar, a child's drawing of the dragon signed “K.”, Grandpa Ren's letter, a tiny plant from Nova's forge, a seed from Pico's garden, a dumpling steamer from Bo's dojo, the **real 4-star Dragon Orb** among the seven.
 - **Palette:** Kiko pink `#FFC2D1`, candle gold, midnight blue, dragon green.
@@ -132,13 +134,14 @@ This is the visual proof that the whole tower was one story. It should be readab
 
 ## 4. Future overlay: Friends Who Scout
 
-`FRIENDS_PLAN.md` adds an optional party bar below the maze and a scout-marks layer (a chalk X and a dotted trail). It is blocked on the map redesign, so **do not implement it now** — just avoid blocking it.
+`FRIENDS_PLAN.md` adds an optional party bar below the maze, a scout-marks layer (a chalk X and a dotted trail), and — as of its 2026-10-24 revision — a **grumblin** token (a harmless mischief-maker that can block a scouting friend's way back). The map redesign it was blocked on has landed, but scouting itself is still unimplemented, so **do not implement any of it now** — just avoid blocking it.
 
 - Keep the bottom edge below the maze clear for a future party bar.
-- The friends' dead-end mark is **white/cream chalk on the floor**. The Hollow Wish's seal is a **red X on the door**. They must never look alike.
+- **Three marks, three meanings:** the friends' dead-end mark is **white/cream chalk on the floor** (= safe to skip); the Hollow Wish's seal is a **red X on the door** (= locked by the story); the grumblin is a **small grumpy creature in a corridor** (= a friend needs help). They must never look alike.
 - After a friend is rescued, the memory diorama stays as an empty “memory bubble”; the friend joins the party line.
-- The scout layer is an overlay between walls and tokens; it needs no changes to walls, portals, or the generator.
+- The scout layer is an overlay between walls and tokens; the grumblin is a token in that same overlay. Neither needs changes to walls, portals, or the generator.
 - The party line is the visual answer to Sora's arc: he does not climb alone. It must not cover the maze or the bottom edge of the play area.
+- Grumblin look: small, round, grumpy, comic — a puff of smoke when it flees. Never a villain silhouette, never dark/scary styling, never on Floor 1, never in the finale.
 
 **Scout banter (optional, P2, one line):**
 
@@ -195,7 +198,9 @@ The rings are not just geometry. On every floor they carry the same three-act sh
 The map is generated, so story props must attach to **cell types and ring bands**, never to fixed coordinates.
 
 - **Cell types:** `start` → story gate; `exit` → memory gate; `friendCell` → memory diorama; `radarCell` → hidden memory; `orbCell` → memory shrine; `coinCells` → echo alcoves (optional); `carrotCells` → carrot patches (mandatory mission cells, not echo alcoves).
-- **Ring bands:** compute `ringIndex` relative to `rings`; outer = first third, middle = middle third, inner = last third. The ring narrative above uses these bands.
+- **Ring bands:** compute `ringIndex` relative to `rings`; outer = first third, middle = middle third, inner = last third. The ring narrative above uses these bands. **Band by thirds of the actual `rings` value — never a fixed number;** ring counts are tuning and may change again.
+- **Ear bands (Floor 3):** ear cells expose `earRow` (0 = tip). Band ear props by thirds: tip / middle / base. Keep ear props off the ear rim and the bottom rows, matching the generator's carrot rule.
+- **Walls are merged long paths.** The renderer combines touching collinear wall edges into single long SVG paths. Props stay at cell centers and never sit on wall segments.
 - **Props:** SVG symbols at cell centers, scaled to cell size. No geometry changes. No text in the map.
 - **Structural vs decorative silhouettes:**
   - **Structural:** bunny ears (already supported by `bunny: true`). Any new structural silhouette must preserve the cell graph and validation.
@@ -242,8 +247,10 @@ The tower has **seven windows**, one per floor and orb. They are the campaign's 
 8. **4-star rule.** Sora's marble is glass and warm; the real 4-star Dragon Orb is on the library pedestal. Never draw the marble as a Dragon Orb.
 9. **Attach to cells, not coordinates.** Follow §6; the maze is generated and props must move with it.
 10. **Use the ring narrative.** Outer ring = arrival/lie, middle = memory/relationship, inner = truth/orb. The murals are optional; the landmarks are not.
-11. **Reserve the future.** Leave the bottom edge clear for the party bar and the overlay space for scout marks.
+11. **Reserve the future.** Leave the bottom edge clear for the party bar and the overlay space for scout marks and the grumblin token.
 12. **Test wordless.** Mute text and audio; the floor must still tell its story.
+13. **Three marks stay distinct.** Chalk X (floor, white/cream) = safe to skip; red X (door) = locked by the story; grumblin (corridor creature) = a friend needs help. Never let two of them resemble each other.
+14. **Props never sit on walls.** Wall strokes are merged long paths; every prop stays at a cell center.
 
 ---
 
@@ -261,3 +268,6 @@ The tower has **seven windows**, one per floor and orb. They are the campaign's 
 - [ ] Is every landmark readable at the smallest supported screen size?
 - [ ] Does the map still work with the sound off and the text muted?
 - [ ] Does the map still work with reduced motion and a colorblind filter?
+- [ ] Do the chalk X, the red X, and the grumblin read as three different things?
+- [ ] Is every prop clear of the merged wall paths (cell centers only)?
+- [ ] On Floor 3, do the ear props follow the `earRow` bands and stay off the ear rim?

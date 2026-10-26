@@ -150,6 +150,87 @@ export function localWalkPath(level: Level, from: number, tapped: number): numbe
   return null;
 }
 
+/**
+ * The open neighbour that continues best along `heading` (a unit vector).
+ * Hold-to-walk uses it to glide down a corridor: a gentle bend keeps enough
+ * alignment to continue, a forced corner in a one-way corridor is followed even
+ * when it is sharp, and at a real fork with no straight continuation the walk
+ * stops so the player still chooses the branch. `avoid` is the cell just left,
+ * so a glide never doubles back.
+ */
+export function straightestOpenNeighbor(
+  level: Level,
+  from: number,
+  heading: { x: number; y: number },
+  options: { avoid?: number | null; minimumAlignment?: number } = {},
+): number | null {
+  const { avoid = null, minimumAlignment = 0.25 } = options;
+  const origin = level.cells[from];
+  if (!origin) return null;
+
+  const candidates = openNeighbors(level, from).filter((id) => id !== avoid);
+  let best: number | null = null;
+  let bestScore = -Infinity;
+  for (const id of candidates) {
+    const cell = level.cells[id];
+    const dx = cell.cx - origin.cx;
+    const dy = cell.cy - origin.cy;
+    const length = Math.hypot(dx, dy);
+    if (length < 1e-6) continue;
+    const score = (dx / length) * heading.x + (dy / length) * heading.y;
+    if (score > bestScore) {
+      bestScore = score;
+      best = id;
+    }
+  }
+  if (best === null) return null;
+  if (bestScore >= minimumAlignment) return best;
+
+  // A tight corner is still the only way forward when the corridor is one-way.
+  return candidates.length === 1 ? best : null;
+}
+
+/**
+ * The open neighbour pointing closest to `target`. Used when the player presses
+ * on Sora himself: the press point says which way to walk, even though the
+ * finger is sitting on his own cell. `avoid` keeps a holding walk from
+ * immediately doubling back unless that is the only way out.
+ */
+export function neighborToward(
+  level: Level,
+  from: number,
+  target: { x: number; y: number },
+  avoid: number | null = null,
+): number | null {
+  const origin = level.cells[from];
+  if (!origin) return null;
+  const dx = target.x - origin.cx;
+  const dy = target.y - origin.cy;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-6) return null;
+
+  const open = openNeighbors(level, from);
+  const pool = avoid === null ? open : open.filter((id) => id !== avoid);
+  // A dead end is a stop, not a bounce: the walk pauses so the thumb can steer.
+  if (pool.length === 0) return null;
+
+  let best: number | null = null;
+  let bestScore = -Infinity;
+  for (const id of pool) {
+    const cell = level.cells[id];
+    const segment = Math.hypot(cell.cx - origin.cx, cell.cy - origin.cy) || 1;
+    // Cosine of the angle between the wanted direction and this neighbour.
+    const score =
+      ((cell.cx - origin.cx) / segment) * (dx / length) +
+      ((cell.cy - origin.cy) / segment) * (dy / length);
+    if (score > bestScore) {
+      bestScore = score;
+      best = id;
+    }
+  }
+  return best;
+}
+
 export function reachableCount(level: Level, from: number): number {
   return bfsDistances(level, from).filter((distance) => distance >= 0).length;
 }

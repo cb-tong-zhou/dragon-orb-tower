@@ -34,8 +34,14 @@ async function playerCell(page) {
 async function walkTo(page, target) {
   await page.locator(`[data-cell-id="${target}"]`).click({ force: true });
   await page.waitForFunction(
-    (cell) =>
-      Number(document.querySelector("[data-player-token]")?.getAttribute("data-player-cell")) === cell,
+    (cell) => {
+      const token = document.querySelector("[data-player-token]");
+      const complete = document.querySelector(".complete-card");
+      return (
+        (token !== null && Number(token.getAttribute("data-player-cell")) === cell) ||
+        complete !== null
+      );
+    },
     target,
     { timeout: 60000 },
   );
