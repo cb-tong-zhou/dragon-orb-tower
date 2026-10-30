@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import type { Settings } from "../game/storage";
 import { TOTAL_FLOORS } from "../content/floors";
 import { FRIENDS_SCOUTING } from "../game/features";
-import { IconBulb, IconGear, IconSound, IconSpeaker, IconStar } from "./Icons";
+import { IconGear, IconSound, IconSpeaker, IconStar } from "./Icons";
 
 interface Props {
   settings: Settings;
@@ -69,13 +69,6 @@ export function SettingsModal({ settings, completed, onChange, onReset, onClose 
             label="Read aloud automatically"
             description="Reads the floor story when you start."
             icon={<IconSpeaker size={22} />}
-          />
-          <Toggle
-            checked={settings.easyWalk}
-            onChange={(value) => onChange({ easyWalk: value })}
-            label="Easy walking"
-            description="Tap anywhere and walk all the way. Best for very small players."
-            icon={<IconBulb size={22} />}
           />
         </div>
 

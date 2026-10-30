@@ -80,7 +80,6 @@ describe("loadSave", () => {
     expect(save.settings).toEqual({
       sound: false,
       voice: true,
-      easyWalk: true,
       friendHelp: "auto",
     });
   });
@@ -103,7 +102,6 @@ describe("loadSave", () => {
         settings: {
           sound: true,
           voice: false,
-          easyWalk: false,
           friendHelp: "manual",
         },
         seenTutorial: false,
@@ -156,7 +154,7 @@ describe("loadSave", () => {
       JSON.stringify({
         version: 2,
         completed: 2,
-        settings: { sound: "yes", voice: 1, easyWalk: null, friendHelp: "sometimes" },
+        settings: { sound: "yes", voice: 1, friendHelp: "sometimes" },
         seenTutorial: "yes",
         rescuedFriends: [1, "mira", null, "bo", "zoe"],
         seenScoutTutorial: 1,
@@ -168,7 +166,6 @@ describe("loadSave", () => {
     expect(save.settings).toEqual({
       sound: true,
       voice: false,
-      easyWalk: false,
       friendHelp: "auto",
     });
     expect(save.rescuedFriends).toEqual(["mira", "bo"]);

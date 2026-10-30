@@ -3,6 +3,10 @@ import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
+  // Bind IPv4 explicitly: on macOS `localhost` can resolve to ::1 only, which
+  // makes http://127.0.0.1:5173 (used by the e2e/smoke scripts) unreachable.
+  server: { host: "127.0.0.1" },
+  preview: { host: "127.0.0.1" },
   plugins: [
     react(),
     VitePWA({

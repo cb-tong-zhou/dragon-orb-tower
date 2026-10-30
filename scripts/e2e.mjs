@@ -4,6 +4,8 @@ import { mkdirSync } from "node:fs";
 const BASE = process.env.E2E_BASE ?? "http://127.0.0.1:5173/";
 const KEY = "dragon-orb-tower-save-v1";
 const KEY2 = "dragon-orb-tower-save-v2";
+/** Keep in sync with TAP_REACH in src/game/motionPath.ts. */
+const TAP_REACH = 8;
 const outDir = "screenshots/e2e";
 mkdirSync(outDir, { recursive: true });
 const browser = await chromium.launch({ channel: "chrome", headless: true });
@@ -33,6 +35,16 @@ async function playerCell(page) {
   return Number(await token.getAttribute("data-player-cell"));
 }
 
+async function playerPoint(page) {
+  return page.evaluate(() => {
+    const token = document.querySelector("[data-player-token]");
+    const match = (token?.style.transform ?? "").match(
+      /translate\(([-\d.]+)px,\s*([-\d.]+)px\)/,
+    );
+    return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+  });
+}
+
 async function isMoving(page) {
   return (await page.getAttribute(".maze-svg", "data-moving")) === "true";
 }
@@ -55,19 +67,57 @@ async function waitForWalkEnd(page, timeoutMs = 12000) {
 }
 
 async function tapCell(page, cellId) {
-  await page.locator(`[data-cell-id="${cellId}"]`).click({ force: true });
+  // A curved annular sector's bounding-box centre can land in a neighbouring
+  // cell, and bunny ears overlap the outer ring, so press a point that really
+  // resolves to the target cell's own hit area. Of those points, choose the
+  // one nearest the cell centre, so the tap is comfortably inside it.
+  const point = await page.evaluate((id) => {
+    const level = window.__dragonTowerLevel;
+    const cell = level.cells[id];
+    const svg = document.querySelector(".maze-svg");
+    const ctm = svg.getScreenCTM();
+    const centre = new DOMPoint(cell.cx, cell.cy).matrixTransform(ctm);
+    const owns = (x, y) => {
+      const el = document.elementFromPoint(x, y);
+      return el?.closest?.("[data-cell-id]")?.getAttribute("data-cell-id") === String(id);
+    };
+    const candidates = [];
+    if (owns(centre.x, centre.y)) candidates.push({ x: centre.x, y: centre.y });
+    const hit = document.querySelector(`[data-cell-id="${id}"]`);
+    if (hit) {
+      const box = hit.getBoundingClientRect();
+      for (let row = 1; row <= 21; row++) {
+        for (let col = 1; col <= 21; col++) {
+          const x = box.left + (box.width * col) / 22;
+          const y = box.top + (box.height * row) / 22;
+          if (owns(x, y)) candidates.push({ x, y });
+        }
+      }
+    }
+    if (candidates.length === 0) return { x: centre.x, y: centre.y };
+    let best = candidates[0];
+    let bestDistance = Infinity;
+    for (const candidate of candidates) {
+      const distance = Math.hypot(candidate.x - centre.x, candidate.y - centre.y);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = candidate;
+      }
+    }
+    return best;
+  }, cellId);
+  await page.mouse.click(point.x, point.y);
   return waitForWalkEnd(page);
 }
 
 /**
- * BFS + local-corridor route info for a target, mirroring the runtime rules:
- * `step` is the first cell on the shortest route, `localStop` is where a tap
- * on the target would actually walk to (the end of the corridor containing
- * the target), or null when the target lies beyond a fork.
+ * Pick a normal cell far enough away along the corridors that the shortest
+ * route does not pass through a mission cell, so the movement test cannot
+ * accidentally finish the floor or trigger a rescue on the way.
  */
-async function routeInfo(page, target) {
+async function pickRouteTarget(page, minLength = TAP_REACH + 3, maxLength = 20) {
   return page.evaluate(
-    ({ target }) => {
+    ({ minLength, maxLength }) => {
       const level = window.__dragonTowerLevel;
       const start = Number(
         document.querySelector("[data-player-token]").getAttribute("data-player-cell"),
@@ -78,135 +128,237 @@ async function routeInfo(page, target) {
         adjacency[edge.a].push(edge.b);
         adjacency[edge.b].push(edge.a);
       }
-
       const previous = new Array(level.cells.length).fill(-1);
-      const distance = new Array(level.cells.length).fill(-1);
-      const visited = new Uint8Array(level.cells.length);
-      visited[start] = 1;
-      distance[start] = 0;
+      const seen = new Uint8Array(level.cells.length);
+      seen[start] = 1;
       const queue = [start];
-      let head = 0;
-      while (head < queue.length) {
-        const current = queue[head++];
+      for (let head = 0; head < queue.length; head++) {
+        const current = queue[head];
         for (const next of adjacency[current]) {
-          if (visited[next]) continue;
-          visited[next] = 1;
+          if (seen[next]) continue;
+          seen[next] = 1;
           previous[next] = current;
-          distance[next] = distance[current] + 1;
           queue.push(next);
         }
       }
 
-      const segments = [];
-      for (const first of adjacency[start]) {
+      const pathTo = (target) => {
         const path = [];
-        const seen = new Set([start]);
-        let prev = start;
-        let current = first;
-        while (!seen.has(current)) {
-          path.push(current);
-          seen.add(current);
-          const cell = level.cells[current];
-          if (cell.kind === "start" || cell.kind === "exit" || cell.kind === "chamber") break;
-          const next = adjacency[current].filter((id) => id !== prev);
-          if (next.length === 0 || next.length >= 2) break;
-          prev = current;
-          current = next[0];
+        let cursor = target;
+        while (cursor !== -1 && cursor !== start) {
+          path.push(cursor);
+          cursor = previous[cursor];
         }
-        segments.push(path);
-      }
-
-      const containing = segments.find((path) => path.includes(target)) ?? null;
-      const path = [];
-      let cursor = target;
-      while (cursor !== -1) {
-        path.push(cursor);
-        cursor = previous[cursor];
-      }
-      path.reverse();
-
-      return {
-        start,
-        distance: distance[target],
-        step: distance[target] >= 1 ? path[1] : null,
-        localStop: containing ? containing[containing.length - 1] : null,
+        if (cursor !== start) return null;
+        path.push(start);
+        path.reverse();
+        let total = 0;
+        for (let index = 1; index < path.length; index++) {
+          const a = level.cells[path[index - 1]];
+          const b = level.cells[path[index]];
+          total += Math.hypot(b.cx - a.cx, b.cy - a.cy);
+        }
+        return { path, total };
       };
+
+      const forbidden = new Set([
+        level.friendCell,
+        level.orbCell,
+        level.radarCell,
+        level.exitCell,
+      ]);
+      for (const cell of level.cells) {
+        if (cell.kind !== "normal" && cell.kind !== "ear") continue;
+        const route = pathTo(cell.id);
+        if (!route || route.total < minLength || route.total > maxLength) continue;
+        if (route.path.some((id) => forbidden.has(id))) continue;
+        return { target: cell.id, distance: route.total };
+      }
+      return null;
     },
-    { target },
+    { minLength, maxLength },
   );
 }
 
 /**
- * The first step a press on `target` takes, mirroring neighborToward: the open
- * neighbour closest to the direction from Sora to the pressed cell.
+ * Pick an open neighbour of Sora that is not a mission cell, and return both
+ * its cell id and its centre in screen coordinates for a press-and-hold.
  */
-async function firstStepToward(page, target) {
-  return page.evaluate((targetCell) => {
+async function steeringProbe(page) {
+  return page.evaluate(() => {
     const level = window.__dragonTowerLevel;
-    const from = Number(
+    const start = Number(
       document.querySelector("[data-player-token]").getAttribute("data-player-cell"),
     );
-    const origin = level.cells[from];
-    const goal = level.cells[targetCell];
-    const dx = goal.cx - origin.cx;
-    const dy = goal.cy - origin.cy;
-    const length = Math.hypot(dx, dy) || 1;
+    const reserved = new Set([
+      start,
+      level.friendCell,
+      level.orbCell,
+      level.radarCell,
+      level.exitCell,
+      ...level.coinCells,
+      ...level.carrotCells,
+    ]);
     const neighbours = [];
     for (const edge of level.edges) {
       if (!edge.open) continue;
-      if (edge.a === from) neighbours.push(edge.b);
-      else if (edge.b === from) neighbours.push(edge.a);
+      if (edge.a === start) neighbours.push(edge.b);
+      else if (edge.b === start) neighbours.push(edge.a);
     }
-    let best = null;
-    let bestScore = -Infinity;
-    for (const id of neighbours) {
-      const cell = level.cells[id];
-      const segment = Math.hypot(cell.cx - origin.cx, cell.cy - origin.cy) || 1;
-      const score =
-        ((cell.cx - origin.cx) / segment) * (dx / length) +
-        ((cell.cy - origin.cy) / segment) * (dy / length);
-      if (score > bestScore) {
-        bestScore = score;
-        best = id;
-      }
-    }
-    return best;
-  }, target);
+    const target = neighbours.find((id) => !reserved.has(id));
+    if (target === undefined) return null;
+
+    const cell = level.cells[target];
+    const svg = document.querySelector(".maze-svg");
+    const ctm = svg.getScreenCTM();
+    const point = new DOMPoint(cell.cx, cell.cy).matrixTransform(ctm);
+    const from = level.cells[start];
+    const origin = new DOMPoint(from.cx, from.cy).matrixTransform(ctm);
+    const length = Math.hypot(point.x - origin.x, point.y - origin.y) || 1;
+    return {
+      from: start,
+      target,
+      x: point.x,
+      y: point.y,
+      dx: (point.x - origin.x) / length,
+      dy: (point.y - origin.y) / length,
+    };
+  });
 }
 
 /**
- * Walk to a target one press at a time: press the next cell on the shortest
- * route, which is exactly the direction the press control turns into a step.
+ * Pick the next cell to tap toward `target`: the farthest cell on the BFS
+ * route whose corridor walk still fits inside the tap reach, so repeated
+ * local taps walk Sora along the corridor without letting one tap cross the
+ * floor. The walk is measured from Sora's real position, not the cell centre.
  */
-async function walkTo(page, target, attempts = 900) {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    if ((await page.locator(".complete-card").count()) > 0) return target;
-    const current = await playerCell(page);
-    if (current === target) return current;
+async function pickTapStep(page, target, limit = TAP_REACH - 1.2) {
+  return page.evaluate(
+    ({ targetId, limit }) => {
+      const level = window.__dragonTowerLevel;
+      const token = document.querySelector("[data-player-token]");
+      const match = (token?.style.transform ?? "").match(
+        /translate\(([-\d.]+)px,\s*([-\d.]+)px\)/,
+      );
+      const point = match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+      const nearestCell = (p) => {
+        let best = 0;
+        let bestDistance = Infinity;
+        for (const cell of level.cells) {
+          const d = Math.hypot(cell.cx - p.x, cell.cy - p.y);
+          if (d < bestDistance) {
+            bestDistance = d;
+            best = cell.id;
+          }
+        }
+        return best;
+      };
+      const start = point
+        ? nearestCell(point)
+        : Number(document.querySelector("[data-player-token]").getAttribute("data-player-cell"));
+      const from = point ?? { x: level.cells[start].cx, y: level.cells[start].cy };
+      if (start === targetId) return { cell: targetId, length: 0, steps: 0 };
 
-    const before = await routeInfo(page, target);
-    if (before.step === null) {
-      throw new Error(`No route from ${current} to ${target}`);
-    }
+      const adjacency = level.cells.map(() => []);
+      for (const edge of level.edges) {
+        if (!edge.open) continue;
+        adjacency[edge.a].push(edge.b);
+        adjacency[edge.b].push(edge.a);
+      }
+      const previous = new Array(level.cells.length).fill(-1);
+      const seen = new Uint8Array(level.cells.length);
+      seen[start] = 1;
+      const queue = [start];
+      for (let head = 0; head < queue.length; head++) {
+        const current = queue[head];
+        if (current === targetId) break;
+        for (const next of adjacency[current]) {
+          if (seen[next]) continue;
+          seen[next] = 1;
+          previous[next] = current;
+          queue.push(next);
+        }
+      }
+      if (!seen[targetId]) return null;
 
-    const after = await tapCell(page, before.step);
-    if ((await page.locator(".complete-card").count()) > 0) return target;
-    if (after === current) {
-      throw new Error(`Sora did not move from ${current} toward ${target}`);
-    }
-  }
-  throw new Error(`Could not reach cell ${target}; stopped at ${await playerCell(page)}`);
+      const path = [];
+      let cursor = targetId;
+      while (cursor !== start) {
+        path.push(cursor);
+        cursor = previous[cursor];
+      }
+      path.push(start);
+      path.reverse();
+
+      let length = 0;
+      let pick = start;
+      let steps = 0;
+      let previousPoint = from;
+      for (let index = 1; index < path.length; index++) {
+        const cell = level.cells[path[index]];
+        const leg = Math.hypot(cell.cx - previousPoint.x, cell.cy - previousPoint.y);
+        if (length + leg > limit) break;
+        length += leg;
+        previousPoint = { x: cell.cx, y: cell.cy };
+        pick = path[index];
+        steps = index;
+      }
+      if (pick === start) return null;
+      return { cell: pick, length, steps };
+    },
+    { targetId: target, limit },
+  );
 }
 
-/** Walk to a target with Easy walking on: one tap follows the whole route. */
-async function walkToEasy(page, target, attempts = 40) {
+/**
+ * Walk to a cell by tapping locally: each tap targets a cell inside the tap
+ * range, then the next tap continues from wherever Sora stopped. If a door
+ * modal interrupts the walk, the loop simply continues afterwards.
+ */
+async function walkTo(page, target, attempts = 400) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     if ((await page.locator(".complete-card").count()) > 0) return target;
     const current = await playerCell(page);
     if (current === target) return current;
-    const after = await tapCell(page, target);
+    const before = await playerPoint(page);
+
+    // Prefer a long local step, but fall back to a shorter one when the tap
+    // point inside the last cell would push the walk past the tap reach.
+    let step = await pickTapStep(page, target);
+    if (!step) step = await pickTapStep(page, target, TAP_REACH - 0.15);
+    if (!step) throw new Error(`No route from ${current} to ${target}`);
+    let after = await tapCell(page, step.cell);
     if ((await page.locator(".complete-card").count()) > 0) return target;
     if (after === target) return after;
+
+    const afterPoint = await playerPoint(page);
+    const moved =
+      before && afterPoint ? Math.hypot(afterPoint.x - before.x, afterPoint.y - before.y) : 0;
+    if (after !== current || moved > 0.01) continue;
+
+    // Nothing moved: the tap was probably rejected as out of reach because
+    // its exact pixel sat farther along the corridor than the cell centre.
+    // Retry with a deliberately short step before treating it as a failure.
+    const shortStep = await pickTapStep(page, target, TAP_REACH - 0.15);
+    if (shortStep && shortStep.cell !== step.cell) {
+      after = await tapCell(page, shortStep.cell);
+      if ((await page.locator(".complete-card").count()) > 0) return target;
+      if (after === target) return after;
+      const retryPoint = await playerPoint(page);
+      const retryMoved =
+        before && retryPoint
+          ? Math.hypot(retryPoint.x - before.x, retryPoint.y - before.y)
+          : 0;
+      if (after !== current || retryMoved > 0.01) continue;
+    }
+
+    const toast =
+      (await page.locator(".toast").count()) > 0
+        ? await page.locator(".toast").first().innerText()
+        : "(none)";
+    throw new Error(
+      `Sora did not move from ${current} toward ${target} (tapped ${step.cell}, ${step.steps} away, toast: ${toast})`,
+    );
   }
   throw new Error(`Could not reach cell ${target}; stopped at ${await playerCell(page)}`);
 }
@@ -239,7 +391,7 @@ async function openFloorWithSave(save, floor, viewport) {
 async function openFloor(
   completed,
   floor,
-  settings = { sound: false, voice: false, easyWalk: true, friendHelp: "off" },
+  settings = { sound: false, voice: false, friendHelp: "off" },
 ) {
   return openFloorWithSave(
     {
@@ -331,7 +483,7 @@ function findDeadEndBranch(minPathLength = 2) {
   const context = await contextWithSave({
     version: 1,
     completed: 0,
-    settings: { sound: false, voice: false, easyWalk: false, friendHelp: "off" },
+    settings: { sound: false, voice: false, friendHelp: "off" },
     seenTutorial: false,
   });
   const page = await context.newPage();
@@ -365,7 +517,7 @@ function findDeadEndBranch(minPathLength = 2) {
   }
 
   const start = await playerCell(page);
-  const avoid = new Set([start, level.friendCell, level.orbCell, level.exitCell]);
+  console.log("floor 1 start", start);
 
   // Walk to the nearest junction first so local corridors have real length.
   const junction = await page.evaluate(() => {
@@ -397,56 +549,67 @@ function findDeadEndBranch(minPathLength = 2) {
   if (junction === -1) throw new Error("No junction found on Floor 1");
   await walkTo(page, junction);
 
-  // One step per press: a press on a mid-corridor cell moves exactly one cell,
-  // toward the direction of the press (never the whole corridor).
-  let stopPlan = null;
-  for (const cell of level.cells) {
-    if (avoid.has(cell.id)) continue;
-    const info = await routeInfo(page, cell.id);
-    if (info.localStop !== null && info.step !== null && info.step !== cell.id) {
-      stopPlan = { target: cell.id, expected: await firstStepToward(page, cell.id) };
-      break;
-    }
-  }
-  if (!stopPlan) throw new Error("No walkable press target found on Floor 1");
-  const beforeStepCell = await playerCell(page);
-  const stopCell = await tapCell(page, stopPlan.target);
-  console.log("floor 1 one-step walk", {
-    from: beforeStepCell,
-    target: stopPlan.target,
-    expected: stopPlan.expected,
-    actual: stopCell,
-  });
-  if (stopCell !== stopPlan.expected) {
-    throw new Error(`One-step walk mismatch: expected ${stopPlan.expected}, got ${stopCell}`);
-  }
-
-  // The press direction rules: a press beyond a fork still takes exactly one
-  // step toward the thumb, without pathfinding the whole way.
-  let farPlan = null;
-  for (const cell of level.cells) {
-    if (avoid.has(cell.id) || cell.id === stopPlan.target) continue;
-    const info = await routeInfo(page, cell.id);
-    if (info.localStop === null && info.distance >= 2) {
-      farPlan = { target: cell.id, expected: await firstStepToward(page, cell.id) };
-      break;
-    }
-  }
-  if (!farPlan) throw new Error("No beyond-fork target found on Floor 1");
-  const beforeFarTap = await playerCell(page);
-  const afterFarTap = await tapCell(page, farPlan.target);
-  console.log("floor 1 distant press", {
-    from: beforeFarTap,
-    target: farPlan.target,
-    expected: farPlan.expected,
+  // Tap-to-route is local: a tap on a far cell is ignored, so the maze
+  // cannot be solved by pointing at the exit from across the floor.
+  const routePlan = await pickRouteTarget(page, TAP_REACH + 3, 20);
+  if (!routePlan) throw new Error("No far route target found on Floor 1");
+  const beforeRoute = await playerCell(page);
+  const afterFarTap = await tapCell(page, routePlan.target);
+  console.log("floor 1 far tap ignored", {
+    from: beforeRoute,
+    target: routePlan.target,
+    distance: +routePlan.distance.toFixed(2),
     actual: afterFarTap,
   });
-  if (afterFarTap !== farPlan.expected) {
-    throw new Error(
-      `Distant press should take one step to ${farPlan.expected}, went from ${beforeFarTap} to ${afterFarTap}`,
-    );
+  if (afterFarTap !== beforeRoute) {
+    throw new Error(`A far tap moved Sora from ${beforeRoute} to ${afterFarTap}`);
   }
 
+  const nearStep = await pickTapStep(page, routePlan.target);
+  if (!nearStep) throw new Error("No near tap step found on Floor 1");
+  const afterNearTap = await tapCell(page, nearStep.cell);
+  console.log("floor 1 near tap walks", {
+    from: beforeRoute,
+    tapped: nearStep.cell,
+    distance: +nearStep.length.toFixed(2),
+    steps: nearStep.steps,
+    actual: afterNearTap,
+  });
+  if (afterNearTap !== nearStep.cell) {
+    throw new Error(`Near tap stopped at ${afterNearTap}, expected ${nearStep.cell}`);
+  }
+  await walkTo(page, routePlan.target);
+
+  // Press and drag: the floating joystick appears under the thumb and the
+  // drag heading steers Sora for as long as the thumb stays down.
+  const steer = await steeringProbe(page);
+  if (!steer) throw new Error("No open neighbour available for steering");
+  await page.mouse.move(steer.x, steer.y);
+  await page.mouse.down();
+  await page.waitForTimeout(80);
+  const joystickOpacity = Number(
+    await page.locator("[data-maze-joystick]").getAttribute("opacity"),
+  );
+  if (!(joystickOpacity > 0)) throw new Error("Floating joystick did not appear on press");
+  await page.mouse.move(steer.x + steer.dx * 40, steer.y + steer.dy * 40, { steps: 6 });
+  await page.waitForTimeout(120);
+  const steeringCell = await playerCell(page);
+  const steeringMoving = await isMoving(page);
+  await page.mouse.up();
+  await waitForWalkEnd(page);
+  console.log("floor 1 thumb steering", {
+    from: steer.from,
+    target: steer.target,
+    during: steeringCell,
+    moving: steeringMoving,
+  });
+  if (!steeringMoving) throw new Error("Press-and-hold did not start steering");
+  if (steeringCell === steer.from) {
+    throw new Error(`Press-and-hold did not leave cell ${steer.from}`);
+  }
+  const restedCell = await playerCell(page);
+  if (await isMoving(page)) throw new Error("Sora kept walking after the thumb lifted");
+  if (restedCell === steer.from) throw new Error("Sora returned to the start after steering");
 
   await page.getByRole("button", { name: /^Hint$/ }).click();
   await page.waitForSelector(".hint-path", { timeout: 3000 });
@@ -528,10 +691,10 @@ function findDeadEndBranch(minPathLength = 2) {
     throw new Error("Floor 2 coin chip should not reveal the total before the count question");
   }
 
-  await walkToEasy(page, level.friendCell);
+  await walkTo(page, level.friendCell);
   if (!(await chipDone(page, "friend"))) throw new Error("Bo was not rescued");
   for (const coin of level.coinCells) {
-    await walkToEasy(page, coin);
+    await walkTo(page, coin);
   }
   if (!(await chipDone(page, "coins"))) throw new Error("Not all Floor 2 coins were collected");
   if ((await page.locator("[data-coin-token]").count()) !== 0) {
@@ -540,7 +703,7 @@ function findDeadEndBranch(minPathLength = 2) {
   await page.waitForTimeout(250);
   await page.screenshot({ path: `${outDir}/16-floor2-all-coins.png` });
 
-  await walkToEasy(page, level.exitCell);
+  await walkTo(page, level.exitCell);
   await page.waitForSelector(".lock-card", { timeout: 10000 });
   await page.waitForTimeout(300);
   console.log("floor 2 count question", await page.locator("#door-lock-title").innerText());
@@ -592,17 +755,17 @@ function findDeadEndBranch(minPathLength = 2) {
     throw new Error("Floor 3 carrot mission chip was missing");
   }
 
-  await walkToEasy(page, level.friendCell);
+  await walkTo(page, level.friendCell);
   if (!(await chipDone(page, "friend"))) throw new Error("Pico was not rescued");
   for (const carrot of level.carrotCells) {
-    await walkToEasy(page, carrot);
+    await walkTo(page, carrot);
   }
   if (!(await chipDone(page, "carrots"))) throw new Error("Not all Floor 3 carrots were collected");
   console.log("floor 3 carrot chip", await page.locator('[data-mission="carrots"]').innerText());
   await page.waitForTimeout(250);
   await page.screenshot({ path: `${outDir}/20-floor3-all-carrots.png` });
 
-  await walkToEasy(page, level.exitCell);
+  await walkTo(page, level.exitCell);
   await page.waitForSelector(".lock-card", { timeout: 10000 });
   await page.waitForTimeout(300);
   console.log("floor 3 code question", await page.locator("#door-lock-title").innerText());
@@ -649,7 +812,7 @@ function findDeadEndBranch(minPathLength = 2) {
     throw new Error("Floor 4 orb should be hidden before the radar");
   }
 
-  await walkToEasy(page, level.radarCell);
+  await walkTo(page, level.radarCell);
   if (!(await chipDone(page, "radar"))) throw new Error("Floor 4 radar was not collected");
   if ((await page.locator("[data-radar-token]").count()) !== 0) {
     throw new Error("Floor 4 radar stayed visible after collection");
@@ -660,13 +823,13 @@ function findDeadEndBranch(minPathLength = 2) {
   await page.waitForTimeout(250);
   await page.screenshot({ path: `${outDir}/24-floor4-radar-found.png` });
 
-  await walkToEasy(page, level.friendCell);
-  await walkToEasy(page, level.orbCell);
+  await walkTo(page, level.friendCell);
+  await walkTo(page, level.orbCell);
   if (!(await chipDone(page, "orb"))) throw new Error("Floor 4 orb was not collected");
   if (!/Door open/i.test(await page.locator('[data-mission="door"]').innerText())) {
     throw new Error("Floor 4 door did not open");
   }
-  await walkToEasy(page, level.exitCell);
+  await walkTo(page, level.exitCell);
   await page.waitForSelector(".complete-card", { timeout: 10000 });
   await page.waitForTimeout(500);
   const bonusText = await page.locator(".complete-bonus").innerText();
@@ -682,7 +845,7 @@ function findDeadEndBranch(minPathLength = 2) {
     {
       version: 2,
       completed: 0,
-      settings: { sound: false, voice: false, easyWalk: false, friendHelp: "manual" },
+      settings: { sound: false, voice: false, friendHelp: "manual" },
       seenTutorial: true,
       rescuedFriends: [],
       seenScoutTutorial: true,
@@ -749,7 +912,7 @@ function findDeadEndBranch(minPathLength = 2) {
     {
       version: 2,
       completed: 1,
-      settings: { sound: false, voice: false, easyWalk: false, friendHelp: "manual" },
+      settings: { sound: false, voice: false, friendHelp: "manual" },
       seenTutorial: true,
       rescuedFriends: ["mira"],
       seenScoutTutorial: true,
@@ -817,7 +980,7 @@ function findDeadEndBranch(minPathLength = 2) {
   const context = await contextWithSave({
     version: 1,
     completed: 1,
-    settings: { sound: false, voice: false, easyWalk: true, friendHelp: "off" },
+    settings: { sound: false, voice: false, friendHelp: "off" },
     seenTutorial: true,
   });
   const page = await context.newPage();
@@ -860,7 +1023,7 @@ function findDeadEndBranch(minPathLength = 2) {
   const context = await contextWithSave({
     version: 1,
     completed: 3,
-    settings: { sound: false, voice: false, easyWalk: false, friendHelp: "off" },
+    settings: { sound: false, voice: false, friendHelp: "off" },
     seenTutorial: true,
   });
   const page = await context.newPage();
@@ -872,13 +1035,16 @@ function findDeadEndBranch(minPathLength = 2) {
   await page.screenshot({ path: `${outDir}/15-settings.png` });
   const progress = await page.locator(".progress-box-head strong").innerText();
   console.log("settings progress", progress);
-  await page.getByRole("switch", { name: /Easy walking/i }).click();
+  await page.getByRole("switch", { name: /Read aloud automatically/i }).click();
   await page.getByRole("radio", { name: /I tap to send/i }).click();
   await page.getByRole("button", { name: "Done" }).click();
   const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), KEY2);
   console.log("settings saved", saved);
   if (saved.version !== 2) throw new Error("The v1 save did not migrate to v2");
-  if (!saved.settings.easyWalk) throw new Error("Easy walking was not persisted");
+  if (!saved.settings.voice) throw new Error("Read aloud was not persisted");
+  if ("easyWalk" in saved.settings) {
+    throw new Error("The retired Easy walking setting was persisted");
+  }
   if (saved.settings.friendHelp !== "manual") throw new Error("Friend help mode was not persisted");
   if (JSON.stringify(saved.rescuedFriends) !== JSON.stringify(["mira", "bo", "pico"])) {
     throw new Error(`v2 migration inferred the wrong roster: ${JSON.stringify(saved.rescuedFriends)}`);
@@ -903,7 +1069,7 @@ function findDeadEndBranch(minPathLength = 2) {
   const context = await contextWithSave({
     version: 1,
     completed: 7,
-    settings: { sound: false, voice: false, easyWalk: true, friendHelp: "off" },
+    settings: { sound: false, voice: false, friendHelp: "off" },
     seenTutorial: true,
   });
   const page = await context.newPage();
@@ -937,7 +1103,7 @@ function findDeadEndBranch(minPathLength = 2) {
   const context = await contextWithSave({
     version: 1,
     completed: 6,
-    settings: { sound: false, voice: false, easyWalk: true, friendHelp: "off" },
+    settings: { sound: false, voice: false, friendHelp: "off" },
     seenTutorial: true,
   });
   const page = await context.newPage();
@@ -964,23 +1130,32 @@ function findDeadEndBranch(minPathLength = 2) {
   const orbChip = page.locator('[data-mission="orb"]');
   const chipDone = async (chip) => ((await chip.getAttribute("class")) ?? "").includes("is-done");
 
-  let rescued = await chipDone(friendChip);
-  for (let attempt = 0; attempt < 5 && !rescued; attempt++) {
-    await tapCell(page, level.friendCell);
-    rescued = await chipDone(friendChip);
-  }
-  let radarFound = await chipDone(radarChip);
-  for (let attempt = 0; attempt < 5 && !radarFound; attempt++) {
-    await tapCell(page, level.radarCell);
-    radarFound = await chipDone(radarChip);
-  }
-  let orbFound = await chipDone(orbChip);
-  for (let attempt = 0; attempt < 5 && !orbFound; attempt++) {
-    await tapCell(page, level.orbCell);
-    orbFound = await chipDone(orbChip);
-  }
+  await walkTo(page, level.friendCell);
+  await page.waitForFunction(
+    () => document.querySelector('[data-mission="friend"]')?.classList.contains("is-done"),
+    null,
+    { timeout: 10000 },
+  );
+  const rescued = await chipDone(friendChip);
+
+  await walkTo(page, level.radarCell);
+  await page.waitForFunction(
+    () => document.querySelector('[data-mission="radar"]')?.classList.contains("is-done"),
+    null,
+    { timeout: 10000 },
+  );
+  const radarFound = await chipDone(radarChip);
+
+  await walkTo(page, level.orbCell);
+  await page.waitForFunction(
+    () => document.querySelector('[data-mission="orb"]')?.classList.contains("is-done"),
+    null,
+    { timeout: 10000 },
+  );
+  const orbFound = await chipDone(orbChip);
+
   if (!rescued || !radarFound || !orbFound) throw new Error("Floor 7 objectives were not completed");
-  await walkToEasy(page, level.exitCell);
+  await walkTo(page, level.exitCell);
   await page.waitForSelector(".complete-card");
   const completeTitle = await page.locator("#floor-complete-title").innerText();
   console.log("floor 7 complete", completeTitle);
@@ -997,7 +1172,7 @@ function findDeadEndBranch(minPathLength = 2) {
     {
       version: 1,
       completed: 2,
-      settings: { sound: false, voice: false, easyWalk: false, friendHelp: "off" },
+      settings: { sound: false, voice: false, friendHelp: "off" },
       seenTutorial: true,
     },
     { width: 390, height: 844 },
@@ -1034,7 +1209,7 @@ function findDeadEndBranch(minPathLength = 2) {
     {
       version: 1,
       completed: 7,
-      settings: { sound: false, voice: false, easyWalk: true, friendHelp: "off" },
+      settings: { sound: false, voice: false, friendHelp: "off" },
       seenTutorial: true,
     },
     { width: 390, height: 844 },

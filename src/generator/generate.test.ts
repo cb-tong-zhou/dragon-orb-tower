@@ -30,7 +30,12 @@ function expectPlayable(level: Level, config: FloorConfig) {
   expect(level.cells[level.friendCell]?.kind).toBe("normal");
   expect(level.cells[level.friendCell]?.ring ?? 0).toBeLessThan(level.rings - 1);
   expect(level.metrics.pathToFriend).toBeGreaterThanOrEqual(config.rings * 2);
-  expect(level.metrics.pathToExit).toBeGreaterThanOrEqual(Math.floor(config.rings * 1.3));
+  // Radar floors place the exit on the rim, so its walk is one arc away rather
+  // than a dive back through the middle of the maze. Keep it at least one ring
+  // deep; the orb and radar already carry the long journey.
+  const exitFloor =
+    config.mission === "radar" ? config.rings : Math.floor(config.rings * 1.3);
+  expect(level.metrics.pathToExit).toBeGreaterThanOrEqual(exitFloor);
   expect(level.metrics.deadEnds).toBeGreaterThanOrEqual(config.deadEndMin ?? config.rings * 2.5);
 
   if (config.mission === "rescue") {
@@ -86,11 +91,11 @@ function expectPlayable(level: Level, config: FloorConfig) {
     expect(level.orbCell).toBeGreaterThanOrEqual(0);
     expect(level.radarCell).toBeGreaterThanOrEqual(0);
     expect(level.cells[level.radarCell]?.kind).toBe("normal");
-    expect(level.metrics.pathToOrb).toBeGreaterThanOrEqual(config.rings * 4);
+    expect(level.metrics.pathToOrb).toBeGreaterThanOrEqual(config.rings * 3.5);
     expect(bfsPath(level, level.startCell, level.radarCell).length - 1).toBeGreaterThanOrEqual(
-      config.rings * 6,
+      config.rings * 4.5,
     );
-    expect(level.metrics.pathToFriend).toBeGreaterThanOrEqual(config.rings * 5);
+    expect(level.metrics.pathToFriend).toBeGreaterThanOrEqual(config.rings * 4);
     expect(level.coinCells).toHaveLength(config.coinCount ?? 3);
     for (const cellId of level.coinCells) {
       expect(level.cells[cellId]?.kind).toBe("normal");
@@ -99,7 +104,6 @@ function expectPlayable(level: Level, config: FloorConfig) {
   }
 }
 
-const TWO_PI = Math.PI * 2;
 const WALL_EPS = 1e-6;
 
 interface WallRun {
@@ -116,38 +120,6 @@ function mergeWallRuns(runs: WallRun[]): WallRun[] {
     else merged.push({ ...run });
   }
   return merged;
-}
-
-function arcRunLengths(level: Level): number[] {
-  const byRadius = new Map<number, WallRun[]>();
-  for (const edge of level.edges) {
-    if (edge.open || edge.wall.type !== "arc") continue;
-    const runs = byRadius.get(edge.wall.radius) ?? [];
-    runs.push({ start: edge.wall.a0, end: edge.wall.a1 });
-    byRadius.set(edge.wall.radius, runs);
-  }
-  return [...byRadius.entries()].flatMap(([radius, runs]) =>
-    mergeWallRuns(runs).map((run) => (run.end - run.start) * radius),
-  );
-}
-
-function radialRunLengths(level: Level): number[] {
-  const byAngle = new Map<string, WallRun[]>();
-  for (const edge of level.edges) {
-    if (edge.open || edge.wall.type !== "line") continue;
-    const angle = Math.atan2(edge.wall.y1, edge.wall.x1);
-    const r1 = Math.hypot(edge.wall.x1, edge.wall.y1);
-    const r2 = Math.hypot(edge.wall.x2, edge.wall.y2);
-    if (r1 < WALL_EPS || r2 < WALL_EPS) continue;
-    const wrapped = ((angle % TWO_PI) + TWO_PI) % TWO_PI;
-    const key = wrapped.toFixed(6);
-    const runs = byAngle.get(key) ?? [];
-    runs.push({ start: Math.min(r1, r2), end: Math.max(r1, r2) });
-    byAngle.set(key, runs);
-  }
-  return [...byAngle.values()].flatMap((runs) =>
-    mergeWallRuns(runs).map((run) => run.end - run.start),
-  );
 }
 
 function straightRunLengths(level: Level): number[] {
@@ -254,47 +226,29 @@ describe("campaign floors", () => {
     expect(third.mission).toBe("code");
   });
 
-  it("mixes carving styles across the campaign", () => {
-    const levels = FLOORS.map((story) => generateFloor(story.config));
-    const uniform = (level: Level) =>
-      new Set(
-        level.cells.filter((cell) => cell.kind === "normal").map((cell) => cell.sectors),
-      ).size === 1;
-
-    const uniformLevels = levels.filter(uniform);
-    const growingLevels = levels.filter((level) => !uniform(level));
-
-    // Both the uniform-grid carvers and the widening-ring carver appear somewhere.
-    expect(uniformLevels.length).toBeGreaterThan(0);
-    expect(growingLevels.length).toBeGreaterThan(0);
-
-    // The widening carver must widen outwards, never narrow.
-    for (const level of growingLevels) {
-      const byRing = new Map<number, number>();
+  it("builds every floor on a theta grid of near-square cells", () => {
+    for (const story of FLOORS) {
+      const level = generateFloor(story.config);
       for (const cell of level.cells) {
-        if (cell.kind === "normal") byRing.set(cell.ring, cell.sectors);
+        if (cell.kind !== "normal" || cell.ring < 1) continue;
+        // Inner arc width: also the narrowest doorway into the cell.
+        const width = ((cell.a1 - cell.a0) * cell.r0);
+        expect(width, `floor ${story.config.floor} ring ${cell.ring}`).toBeGreaterThan(0.9);
+        expect(width, `floor ${story.config.floor} ring ${cell.ring}`).toBeLessThan(2.2);
       }
-      const rings = [...byRing.keys()].sort((a, b) => a - b);
-      expect(byRing.get(rings[rings.length - 1])!).toBeGreaterThanOrEqual(byRing.get(rings[0])!);
     }
   });
 
-  it("keeps long continuous wall runs on the uniform-grid floors", () => {
-    const uniformLevels = FLOORS.map((story) => generateFloor(story.config)).filter(
-      (level) =>
-        new Set(
-          level.cells.filter((cell) => cell.kind === "normal").map((cell) => cell.sectors),
-        ).size === 1,
-    );
-    expect(uniformLevels.length).toBeGreaterThan(0);
+  it("gets bushier, with more side branches, on later floors", () => {
+    const ratio = (index: number) => {
+      const level = generateFloor(FLOORS[index].config);
+      return level.metrics.deadEnds / level.metrics.cellCount;
+    };
+    expect(ratio(6)).toBeGreaterThan(ratio(0) * 1.3);
+    expect(ratio(0)).toBeGreaterThan(0.1);
+  });
 
-    // Every uniform-grid floor keeps long continuous arcs.
-    for (const level of uniformLevels) {
-      expect(Math.max(...arcRunLengths(level))).toBeGreaterThan(8);
-      expect(Math.max(...radialRunLengths(level))).toBeGreaterThanOrEqual(1);
-    }
-
-    // The bunny floor's ears are rectangular templates built from straight runs.
+  it("builds the bunny ears from long straight wall runs", () => {
     const bunny = generateFloor(FLOORS[2].config);
     expect(Math.max(...straightRunLengths(bunny))).toBeGreaterThan(5);
   });

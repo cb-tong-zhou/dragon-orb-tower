@@ -129,7 +129,19 @@ export interface FloorConfig {
    * picks one deterministically from the seed, so different floors get a
    * different feel while replays stay reproducible.
    */
-  generator?: "divide" | "ring" | "growing" | "hybrid" | "auto";
+  generator?: "divide" | "ring" | "growing" | "hybrid" | "tree" | "auto";
+  /**
+   * Tree carver only: chance each step extends the newest cell instead of a
+   * random one. High values make long winding corridors; low values make
+   * bushy mazes with many short branches. Defaults to 0.6.
+   */
+  treeBias?: number;
+  /**
+   * Chance that a divide-carver cut is a concentric arc instead of a radial
+   * spoke. Lower values make later floors turn more and spend less time
+   * circling one ring corridor. Defaults to 0.8.
+   */
+  divideBias?: number;
   /** Absolute minimum dead ends for this floor. */
   deadEndMin?: number;
   portalStyle?: "auto" | "opposite";

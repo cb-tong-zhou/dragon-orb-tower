@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 import { floorStory, TOTAL_FLOORS } from "../content/floors";
-import { getCharacter, SORA } from "../content/characters";
+import { nearestCellId, buildWalls, steerMove } from "../game/freeMove";
 import {
-  bfsPath,
-  isJunction,
-  neighborToward,
-  straightestOpenNeighbor,
-} from "../generator/graph";
+  FINGER_RADIUS_PX,
+  pickTapTarget,
+  planTapPath,
+  routeSpeed,
+  samplePolyline,
+  withinTapReach,
+  type Polyline,
+} from "../game/motionPath";
+import { getCharacter, SORA } from "../content/characters";
+import { bfsPath, isJunction } from "../generator/graph";
 import { generateFloor } from "../generator/generate";
 import type { Level } from "../generator/types";
 import type { Settings } from "../game/storage";
@@ -36,7 +41,7 @@ import { DragonCarrotGlyph } from "../components/DragonCarrot";
 import { DragonCoinGlyph } from "../components/DragonCoin";
 import { DragonOrb } from "../components/DragonOrb";
 import { DragonRadarGlyph } from "../components/DragonRadar";
-import { Maze } from "../components/Maze";
+import { Maze, TAP_MAX_MS, type MazeCamera } from "../components/Maze";
 import { PartyBar } from "../components/PartyBar";
 import {
   IconBack,
@@ -45,6 +50,7 @@ import {
   IconCollapse,
   IconExpand,
   IconLock,
+  IconMap,
   IconSound,
   IconSpeaker,
   IconStar,
@@ -72,14 +78,36 @@ interface Toast {
   text: string;
 }
 
-const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+interface MotionState {
+  mode: "idle" | "steer" | "route";
+  /** Sora's exact position, kept between gestures so he never snaps to a cell. */
+  point: { x: number; y: number };
+  velocity: { x: number; y: number };
+  /** The heading from the initial press, used until the thumb actually drags. */
+  initial: { x: number; y: number } | null;
+  route: { line: Polyline; travelled: number; speed: number } | null;
+  raf: number | null;
+  last: number;
+  /** Distance travelled since the last footstep sound. */
+  footstep: number;
+  /** Actual movement speed of the last frame (after wall contact). */
+  actualSpeed: number;
+}
+
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-/** One cell per step; the maze glide uses the same value so motion never stalls. */
-const WALK_STEP_MS = 120;
-/** How far (in corridor steps) a grabbed Sora will follow the finger. */
-const GRAB_FOLLOW_MAX_STEPS = 3;
-/** Easy walking stays slower and calmer for the youngest players. */
-const EASY_STEP_MS = 100;
+
+/** Sora's cruising speed in maze units per second (one corridor width / 0.12s). */
+const WALK_SPEED = 9;
+/** Time constants for the velocity easing. Short enough to feel direct. */
+const STEER_ACCEL_TAU = 0.05;
+const STEER_STOP_TAU = 0.022;
+/** Route walking: how hard the auto-walker accelerates and brakes. */
+const ROUTE_ACCEL = 55;
+const ROUTE_BRAKE = 55;
+/** Play a footstep every this many maze units travelled. */
+const FOOTSTEP_DISTANCE = 2.1;
+/** How far a cell must win by before the player's cell changes, to stop flicker. */
+const CELL_HYSTERESIS = 0.03;
 
 function fireConfetti() {
   if (typeof window === "undefined") return;
@@ -146,6 +174,9 @@ export function PlayScreen({
   const [introOpen, setIntroOpen] = useState(true);
   const [showComplete, setShowComplete] = useState(false);
   const [bigMaze, setBigMaze] = useState(false);
+  /** Phones zoom in on Sora; this shows the whole floor instead. */
+  const [wholeMaze, setWholeMaze] = useState(false);
+  const [zoomable, setZoomable] = useState(false);
   const [lockOpen, setLockOpen] = useState(false);
   const [lockError, setLockError] = useState("");
 
@@ -159,14 +190,35 @@ export function PlayScreen({
   const lockOpenRef = useRef(false);
   const completedRef = useRef(false);
   const aliveRef = useRef(true);
-  const runIdRef = useRef(0);
   const holdingRef = useRef(false);
   const lastReleaseRef = useRef(0);
+  const playerTokenRef = useRef<SVGGElement | null>(null);
+  const cameraRef = useRef<MazeCamera | null>(null);
+  const gestureRef = useRef<{ selection: boolean; routed: boolean } | null>(null);
+  /** A press outside tap reach waits for a drag or a hold before steering. */
+  const holdRef = useRef<{ timer: number } | null>(null);
   const joystickRef = useRef<{
     direction: { x: number; y: number } | null;
     dragging: boolean;
     point: { x: number; y: number } | null;
-  }>({ direction: null, dragging: false, point: null });
+    origin: { x: number; y: number } | null;
+  }>({ direction: null, dragging: false, point: null, origin: null });
+  const motionRef = useRef<MotionState>({
+    mode: "idle",
+    point: {
+      x: level.cells[level.startCell].cx,
+      y: level.cells[level.startCell].cy,
+    },
+    velocity: { x: 0, y: 0 },
+    initial: null,
+    route: null,
+    raf: null,
+    last: 0,
+    footstep: 0,
+    actualSpeed: 0,
+  });
+
+  const walls = useMemo(() => buildWalls(level), [level]);
 
   const showToast = useCallback((text: string) => {
     setToast({ id: Date.now() + Math.random(), text });
@@ -221,7 +273,15 @@ export function PlayScreen({
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
-      runIdRef.current += 1;
+      if (holdRef.current) {
+        window.clearTimeout(holdRef.current.timer);
+        holdRef.current = null;
+      }
+      const motion = motionRef.current;
+      if (motion.raf !== null) {
+        cancelAnimationFrame(motion.raf);
+        motion.raf = null;
+      }
       stopSpeaking();
       confetti.reset();
     };
@@ -587,59 +647,289 @@ export function PlayScreen({
     showToast(`Follow the dots to ${label}.`);
   };
 
-  const targetFrom = (cellId: number, direction: { x: number; y: number }) => {
-    const cell = level.cells[cellId];
-    return { x: cell.cx + direction.x, y: cell.cy + direction.y };
-  };
+  /**
+   * Write Sora's transform straight to the DOM. Doing this outside React is
+   * what keeps steering at 60fps: the maze only re-renders when he enters a new
+   * cell, not on every frame.
+   */
+  const paintPlayer = useCallback(
+    (point: { x: number; y: number }, direction: { x: number; y: number }, active: boolean) => {
+      const token = playerTokenRef.current;
+      if (!token) return;
+      const lean =
+        active && Math.hypot(direction.x, direction.y) > 0.1
+          ? Math.max(-9, Math.min(9, direction.x * 9))
+          : 0;
+      token.style.transform = `translate(${point.x}px, ${point.y}px) rotate(${lean}deg)`;
+      cameraRef.current?.follow(point);
+    },
+    [],
+  );
+
+  /** Flip the logical cell only when the new one is clearly closer. */
+  const updatePlayerCell = useCallback(
+    (point: { x: number; y: number }) => {
+      const next = nearestCellId(level, point);
+      if (next === playerRef.current) return;
+      const current = level.cells[playerRef.current];
+      const candidate = level.cells[next];
+      if (!current || !candidate) return;
+      const currentDistance = Math.hypot(point.x - current.cx, point.y - current.cy);
+      const nextDistance = Math.hypot(point.x - candidate.cx, point.y - candidate.cy);
+      if (nextDistance + CELL_HYSTERESIS > currentDistance) return;
+      if (friendRescuedRef.current) setFollowerCell(playerRef.current);
+      playerRef.current = next;
+      setPlayerCell(next);
+    },
+    [level],
+  );
+
+  const finishMotion = useCallback(() => {
+    const motion = motionRef.current;
+    if (motion.raf !== null) {
+      cancelAnimationFrame(motion.raf);
+      motion.raf = null;
+    }
+    motion.mode = "idle";
+    motion.route = null;
+    motion.initial = null;
+    motion.velocity.x = 0;
+    motion.velocity.y = 0;
+    motion.actualSpeed = 0;
+    movingRef.current = false;
+    setMoving(false);
+    paintPlayer(motion.point, { x: 0, y: 0 }, false);
+  }, [paintPlayer]);
+
+  const tick = useCallback(
+    (now: number) => {
+      const motion = motionRef.current;
+      motion.raf = null;
+      const dt = Math.min(0.05, Math.max(0.001, (now - motion.last) / 1000));
+      motion.last = now;
+
+      if (!aliveRef.current || completedRef.current || lockOpenRef.current) {
+        finishMotion();
+        return;
+      }
+
+      const previous = motion.point;
+      let keep = false;
+      let travelDirection = { x: 0, y: 0 };
+      motion.actualSpeed = 0;
+
+      if (motion.mode === "steer") {
+        const joystick = joystickRef.current;
+        const heading = holdingRef.current
+          ? joystick.dragging && joystick.direction
+            ? joystick.direction
+            : motion.initial
+          : null;
+
+        if (heading) {
+          const k = 1 - Math.exp(-dt / STEER_ACCEL_TAU);
+          motion.velocity.x += (heading.x * WALK_SPEED - motion.velocity.x) * k;
+          motion.velocity.y += (heading.y * WALK_SPEED - motion.velocity.y) * k;
+        } else {
+          const k = 1 - Math.exp(-dt / STEER_STOP_TAU);
+          motion.velocity.x += (0 - motion.velocity.x) * k;
+          motion.velocity.y += (0 - motion.velocity.y) * k;
+        }
+
+        const speed = Math.hypot(motion.velocity.x, motion.velocity.y);
+        if (speed > 1e-6) {
+          const moved = steerMove(
+            walls,
+            motion.point,
+            { x: motion.velocity.x / speed, y: motion.velocity.y / speed },
+            speed * dt,
+          );
+          motion.point = moved.point;
+          motion.actualSpeed = moved.distance / dt;
+          if (moved.distance > 1e-6) {
+            travelDirection = {
+              x: (moved.point.x - previous.x) / moved.distance,
+              y: (moved.point.y - previous.y) / moved.distance,
+            };
+          }
+          // A wall absorbed the whole step: stop pushing into it.
+          if (moved.distance < speed * dt * 0.02) {
+            motion.velocity.x = 0;
+            motion.velocity.y = 0;
+          }
+        }
+
+        keep = holdingRef.current || speed > 0.08;
+        if (!holdingRef.current && speed <= 0.08) {
+          finishMotion();
+          return;
+        }
+      } else if (motion.mode === "route" && motion.route) {
+        const route = motion.route;
+        const remaining = route.line.total - route.travelled;
+        route.speed = routeSpeed(route.speed, remaining, dt, WALK_SPEED, ROUTE_ACCEL, ROUTE_BRAKE);
+        route.travelled = Math.min(route.line.total, route.travelled + route.speed * dt);
+
+        const sample = samplePolyline(route.line, route.travelled);
+        motion.point = sample.point;
+        motion.velocity.x = sample.direction.x * route.speed;
+        motion.velocity.y = sample.direction.y * route.speed;
+        motion.actualSpeed = route.speed;
+        travelDirection = sample.direction;
+        keep = true;
+
+        if (route.travelled >= route.line.total - 1e-9) {
+          const last = route.line.points[route.line.points.length - 1];
+          motion.point = { x: last.x, y: last.y };
+          updatePlayerCell(motion.point);
+          finishMotion();
+          return;
+        }
+      }
+
+      motion.footstep += motion.actualSpeed * dt;
+      if (motion.footstep >= FOOTSTEP_DISTANCE) {
+        motion.footstep = 0;
+        playStep();
+      }
+
+      updatePlayerCell(motion.point);
+      paintPlayer(motion.point, travelDirection, motion.actualSpeed > 0.4);
+
+      if (keep) motion.raf = requestAnimationFrame(tick);
+      else finishMotion();
+    },
+    [finishMotion, paintPlayer, updatePlayerCell, walls],
+  );
+
+  const startLoop = useCallback(() => {
+    const motion = motionRef.current;
+    if (motion.raf !== null) cancelAnimationFrame(motion.raf);
+    motion.last = performance.now();
+    motion.raf = requestAnimationFrame(tick);
+  }, [tick]);
+
+  /** Start (or take over) thumb steering from Sora's exact current position. */
+  const startSteer = useCallback(
+    (initial: { x: number; y: number } | null) => {
+      const motion = motionRef.current;
+      motion.mode = "steer";
+      motion.route = null;
+      motion.initial = initial;
+      movingRef.current = true;
+      setMoving(true);
+      initAudio();
+      playTap();
+      setHintPath([]);
+      startLoop();
+    },
+    [startLoop],
+  );
+
+  /**
+   * Tap-to-walk: a tap within TAP_REACH units of corridor walks to that exact
+   * pixel, not to a cell centre. When a wall sits between Sora and the tap the
+   * walk follows the corridors and still finishes on the tapped spot. Taps
+   * farther than the reach are rejected, so the maze cannot be handed to the
+   * walker by spamming the exit.
+   */
+  const startRoute = useCallback(
+    (cellId: number, target: { x: number; y: number }, complain = true): boolean => {
+      const motion = motionRef.current;
+      const plan = planTapPath(level, walls, motion.point, target, cellId);
+      if (!plan) return false;
+
+      if (!withinTapReach(plan.line.total)) {
+        if (complain) {
+          playError();
+          showToast("That's too far — tap nearer to Sora!");
+        }
+        return false;
+      }
+
+      const line = plan.line;
+      initAudio();
+      playTap();
+      setHintPath([]);
+
+      const startDirection = samplePolyline(line, 0).direction;
+      const carriedSpeed = Math.max(
+        0,
+        motion.velocity.x * startDirection.x + motion.velocity.y * startDirection.y,
+      );
+      const speed = Math.min(carriedSpeed, WALK_SPEED);
+
+      motion.mode = "route";
+      motion.initial = null;
+      motion.velocity.x = startDirection.x * speed;
+      motion.velocity.y = startDirection.y * speed;
+      motion.route = { line, travelled: 0, speed };
+      movingRef.current = true;
+      setMoving(true);
+      startLoop();
+      return true;
+    },
+    [finishMotion, level, showToast, startLoop, walls],
+  );
 
   /**
    * Two ways to move:
-   * - press Sora himself and drag: Sora is grabbed and follows the finger,
-   *   walking the corridors to stay under it;
-   * - press anywhere else: he walks toward the thumb and keeps going while the
-   *   finger is down, steering like a joystick when the thumb slides.
+   * - tap: Sora sets off the instant the finger lands, toward the corridor
+   *   under the fingertip he can reach soonest (see pickTapTarget). Taps
+   *   beyond one tap's reach are refused, so the maze is not solved by
+   *   tapping the exit;
+   * - press and drag: a joystick appears under the thumb and takes over from
+   *   wherever Sora is, without his finger ever covering him.
    */
   const handleMazePointerDown = ({
-    direction,
     cellId,
-    onPlayer,
+    point,
+    pixelsPerUnit,
   }: {
-    direction: { x: number; y: number } | null;
     cellId: number | null;
-    onPlayer: boolean;
+    point: { x: number; y: number };
+    pixelsPerUnit: number;
   }) => {
-    holdingRef.current = true;
-    joystickRef.current = { direction: null, dragging: false, point: null };
+    gestureRef.current = { selection: false, routed: false };
+    if (introOpen || showComplete || lockOpenRef.current) return;
 
-    if (introOpen || showComplete || lockOpenRef.current || movingRef.current) return;
-
-    // A selected friend is waiting for a branch: the press picks the branch.
+    // A selected friend is waiting for a branch: the tap picks the branch.
     if (scouting.enabled && scouting.selection) {
-      if (cellId !== null) scouting.handleCellTap(cellId);
+      gestureRef.current = { selection: true, routed: false };
       return;
     }
 
-    if (onPlayer) {
-      startWalk([], true, undefined, true);
-      return;
-    }
+    const motion = motionRef.current;
+    holdingRef.current = true;
+    joystickRef.current = { direction: null, dragging: false, point, origin: point };
 
-    // Easy walking is the opt-in that walks a whole route in one press.
-    if (settings.easyWalk) {
-      if (cellId === null || cellId === playerRef.current) return;
-      const route = bfsPath(level, playerRef.current, cellId).slice(1);
-      if (route.length > 0) startWalk(route, false);
-      return;
-    }
+    // Taps in the padding around the board are not walk requests.
+    const onBoard = cellId !== null || Math.hypot(point.x, point.y) <= level.outerRadius + 0.6;
+    const target = onBoard
+      ? pickTapTarget(level, motion.point, point, FINGER_RADIUS_PX / pixelsPerUnit)
+      : null;
+    const routed = target !== null && startRoute(target.cellId, target.point, false);
+    gestureRef.current = { selection: false, routed };
 
-    if (!direction) return;
-    const first = neighborToward(
-      level,
-      playerRef.current,
-      targetFrom(playerRef.current, direction),
-    );
-    if (first === null) return;
-    startWalk([first], true, direction);
+    // A press that stays put past the tap window becomes the thumb stick,
+    // unless it already set Sora walking.
+    holdRef.current = {
+      timer: window.setTimeout(() => {
+        if (!holdingRef.current || joystickRef.current.dragging) return;
+        holdRef.current = null;
+        if (gestureRef.current?.routed) return;
+        const current = motionRef.current;
+        const origin = joystickRef.current.origin;
+        if (!origin) {
+          startSteer(null);
+          return;
+        }
+        const ox = origin.x - current.point.x;
+        const oy = origin.y - current.point.y;
+        const distance = Math.hypot(ox, oy);
+        startSteer(distance > 0.08 ? { x: ox / distance, y: oy / distance } : null);
+      }, TAP_MAX_MS),
+    };
   };
 
   const handleMazePointerMove = ({
@@ -651,166 +941,77 @@ export function PlayScreen({
     dragging: boolean;
     point: { x: number; y: number };
   }) => {
-    joystickRef.current = { direction, dragging, point };
+    const joystick = joystickRef.current;
+    if (!joystick.origin) return;
+    joystick.point = point;
+    joystick.dragging = dragging;
+    if (!dragging) return;
+    joystick.direction = direction;
+
+    // A drag starts steering immediately, so the thumb stick stays responsive
+    // even though a plain press waits for the tap window to close.
+    const hold = holdRef.current;
+    if (hold) {
+      window.clearTimeout(hold.timer);
+      holdRef.current = null;
+      startSteer(direction);
+    }
   };
 
-  const handleMazePointerRelease = () => {
+  const handleMazePointerUp = ({
+    tap,
+    cellId,
+    point,
+  }: {
+    tap: boolean;
+    cellId: number | null;
+    point: { x: number; y: number };
+  }) => {
+    const gesture = gestureRef.current;
+    gestureRef.current = null;
     holdingRef.current = false;
     lastReleaseRef.current = Date.now();
-    joystickRef.current = { direction: null, dragging: false, point: null };
+    joystickRef.current = { direction: null, dragging: false, point: null, origin: null };
+
+    const hold = holdRef.current;
+    if (hold) {
+      window.clearTimeout(hold.timer);
+      holdRef.current = null;
+    }
+
+    if (gesture?.selection) {
+      if (cellId !== null) scouting.handleCellTap(cellId);
+      return;
+    }
+
+    // The press already set Sora walking. A tap that could not route on the
+    // press says why now, once the finger has lifted.
+    if (gesture?.routed) return;
+    if (tap && cellId !== null && !introOpen && !showComplete && !lockOpenRef.current) {
+      startRoute(cellId, point);
+    }
   };
 
   const handleCellClick = (cellId: number) => {
-    // Browsers fire a click right after the finger lifts. Playing it would add
-    // one more step every time a drag ends, so only honor clicks that arrive
-    // without a pointer release (programmatic activation, assistive tech).
+    // Browsers fire a click right after the finger lifts. The pointer handler
+    // already routed that tap, so only honor programmatic/assistive clicks.
     if (holdingRef.current || Date.now() - lastReleaseRef.current < 400) return;
-    if (introOpen || showComplete || lockOpenRef.current || movingRef.current) return;
-    if (cellId === playerRef.current) return;
+    if (introOpen || showComplete || lockOpenRef.current) return;
 
     if (scouting.enabled && scouting.selection) {
       scouting.handleCellTap(cellId);
       return;
     }
 
-    if (settings.easyWalk) {
-      const route = bfsPath(level, playerRef.current, cellId).slice(1);
-      if (route.length > 0) startWalk(route, false);
-      return;
-    }
-
-    const target = level.cells[cellId];
-    const first = neighborToward(level, playerRef.current, { x: target.cx, y: target.cy });
-    if (first === null) return;
-    startWalk([first], false);
+    const cell = level.cells[cellId];
+    if (cell) startRoute(cellId, { x: cell.cx, y: cell.cy });
   };
 
-  /**
-   * Advance Sora along `route` immediately (no initial dead time) and keep the
-   * avatar gliding from cell to cell: when `followHeld` is set, each finished
-   * step looks for the straightest continuation and takes it while the finger
-   * is still down. The step interval matches the token's CSS glide so the
-   * motion never stops and starts between cells.
-   */
-  /** The cell whose centre is closest to a point in maze coordinates. */
-  const nearestCell = (point: { x: number; y: number }): number | null => {
-    let best: number | null = null;
-    let bestDistance = Infinity;
-    for (const cell of level.cells) {
-      const distance = Math.hypot(cell.cx - point.x, cell.cy - point.y);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = cell.id;
-      }
-    }
-    return best;
-  };
+  // Paint Sora at his exact start position before the first frame.
+  useLayoutEffect(() => {
+    paintPlayer(motionRef.current.point, { x: 0, y: 0 }, false);
+  }, [paintPlayer]);
 
-  const startWalk = (
-    route: number[],
-    followHeld: boolean,
-    direction?: { x: number; y: number },
-    drag = false,
-  ) => {
-    initAudio();
-    playTap();
-    setHintPath([]);
-    setToast(null);
-    setMoving(true);
-    movingRef.current = true;
-
-    const runId = ++runIdRef.current;
-    const cells = level.cells;
-    const duration = settings.easyWalk ? EASY_STEP_MS : WALK_STEP_MS;
-    let previous = playerRef.current;
-    let cameFrom: number | null = null;
-    let heading = { x: 0, y: 0 };
-    // The thumb keeps a compass heading: the corridor is followed first, and
-    // where it turns away this heading decides which fork to take.
-    let compass = drag ? null : (direction ?? null);
-
-    const advance = (next: number) => {
-      const fromCell = cells[previous];
-      const toCell = cells[next];
-      const dx = toCell.cx - fromCell.cx;
-      const dy = toCell.cy - fromCell.cy;
-      const length = Math.hypot(dx, dy);
-      if (length > 1e-6) heading = { x: dx / length, y: dy / length };
-      if (friendRescuedRef.current) setFollowerCell(previous);
-      playerRef.current = next;
-      setPlayerCell(next);
-      playStep();
-      cameFrom = previous;
-      previous = next;
-    };
-
-    const stopped = () =>
-      !aliveRef.current ||
-      runIdRef.current !== runId ||
-      completedRef.current ||
-      lockOpenRef.current;
-
-    /** The next cell in the direction the thumb is pulling. */
-    const stepFromThumb = (): number | null => {
-      const joystick = joystickRef.current;
-      if (drag) {
-        // Grabbed Sora: walk the shortest corridor route toward the cell under
-        // the finger, so he goes where the finger is instead of drifting at forks.
-        if (!joystick.point) return null;
-        const under = nearestCell(joystick.point);
-        if (under === null || under === previous) return null;
-        const route = bfsPath(level, previous, under);
-        // Only follow a finger that stays close along the corridors; a far
-        // finger (across a wall) would walk Sora on a long detour, so he waits.
-        if (route.length < 2 || route.length - 1 > GRAB_FOLLOW_MAX_STEPS) return null;
-        return route[1];
-      }
-      if (joystick.dragging && joystick.direction) compass = joystick.direction;
-      if (!compass) return null;
-      // Follow the corridor first; when it turns sharply, keep walking the way
-      // the thumb points instead of stalling at the fork.
-      const straight = straightestOpenNeighbor(level, previous, heading, { avoid: cameFrom });
-      if (straight !== null) return straight;
-      return neighborToward(level, previous, targetFrom(previous, compass), cameFrom);
-    };
-
-    const run = async () => {
-      if (followHeld) {
-        // A grab waits for the finger to pull away before the first step; a
-        // directional press steps immediately.
-        if (!drag) {
-          const first = route[0];
-          if (first !== undefined) advance(first);
-        }
-        while (holdingRef.current) {
-          await wait(duration);
-          if (stopped() || !holdingRef.current) break;
-          // A dead end pauses the walk instead of ending it, so dragging on
-          // still steers Sora out without lifting the finger.
-          const next = stepFromThumb();
-          if (next === null) continue;
-          advance(next);
-        }
-      } else {
-        for (let index = 0; index < route.length; index++) {
-          if (stopped()) break;
-          advance(route[index]);
-          // Wait only between steps: the last step must clear the walk flag
-          // immediately so a quick follow-up tap is not swallowed.
-          if (index < route.length - 1) await wait(duration);
-        }
-      }
-
-      // Always clear the walk flag for this run, even when the walk ended on
-      // the door or the exit, or Sora would stay stuck in "moving".
-      if (aliveRef.current && runIdRef.current === runId) {
-        movingRef.current = false;
-        setMoving(false);
-      }
-    };
-
-    void run();
-  };
 
   const answerCount = (value: number) => {
     initAudio();
@@ -952,6 +1153,18 @@ export function PlayScreen({
           {bigMaze ? <IconCollapse size={18} /> : <IconExpand size={18} />}
           <span>{bigMaze ? "Exit big maze" : "Big maze"}</span>
         </button>
+        {zoomable ? (
+          <button
+            type="button"
+            className="maze-size-btn maze-view-btn"
+            aria-pressed={wholeMaze}
+            aria-label={wholeMaze ? "Zoom back in on Sora" : "Show the whole maze"}
+            onClick={() => setWholeMaze((value) => !value)}
+          >
+            <IconMap size={18} />
+            <span>{wholeMaze ? "Follow Sora" : "Whole maze"}</span>
+          </button>
+        ) : null}
         <div className="maze-board">
           <Maze
             level={level}
@@ -969,11 +1182,14 @@ export function PlayScreen({
             hintPath={hintPath}
             moving={moving}
             showMoves={!moving && !introOpen && !showComplete && !lockOpen}
-            glideMs={settings.easyWalk ? EASY_STEP_MS : WALK_STEP_MS}
+            playerTokenRef={playerTokenRef}
+            cameraRef={cameraRef}
+            overview={wholeMaze || introOpen || showComplete}
+            onZoomableChange={setZoomable}
             onCellTap={handleCellClick}
             onMazePointerDown={handleMazePointerDown}
             onMazePointerMove={handleMazePointerMove}
-            onMazePointerRelease={handleMazePointerRelease}
+            onMazePointerUp={handleMazePointerUp}
             party={scouting.enabled ? scouting.partyTokens : null}
             scoutMarks={scouting.enabled ? scouting.marks : null}
             scoutHighlight={scouting.enabled ? scouting.highlight : null}
@@ -1084,7 +1300,7 @@ export function PlayScreen({
             {floor === 1 && !seenTutorial ? (
               <div className="tutorial-box">
                 <strong>How to play</strong>
-                <p>Press anywhere on the maze and Sora walks that way; keep your finger down to keep walking, and slide it to steer him round bends and forks. Or put your finger on Sora himself and drag him along the corridor.</p>
+                <p>Tap anywhere near Sora and he walks to that exact spot — pixel by pixel, with no cell to aim at. Farther taps do nothing, so you find the way yourself. Or press and hold anywhere on the maze: a joystick pops up under your thumb, and you slide it to steer him round bends and forks.</p>
                 <p>
                   Rescue your friend, reach the center star, then head for the door. This first
                   floor does not need the Dragon Radar.

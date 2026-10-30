@@ -1,7 +1,16 @@
-import { useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { getCharacter, type Character } from "../content/characters";
 import type { Cell, Edge, Level, Wall } from "../generator/types";
-import { CAPSULE_RADIUS, openNeighborIds, PORTAL_OFFSET } from "../generator/generate";
+import { capsuleOpening, CAPSULE_RADIUS, openNeighborIds, PORTAL_OFFSET } from "../generator/generate";
+import { nearestCellId } from "../game/freeMove";
 import type { GremlinToken, PartyToken, ScoutHighlight, ScoutMark } from "./mazeTypes";
 import { AvatarGlyph } from "./CharacterAvatar";
 import { DragonCarrotGlyph } from "./DragonCarrot";
@@ -179,8 +188,8 @@ function cellPath(cell: Cell): string {
   ].join(" ");
 }
 
-function capsuleOutline(cell: Cell): string {
-  const gap = 0.58;
+function capsuleOutline(cell: Cell, outerRadius: number): string {
+  const gap = capsuleOpening(outerRadius);
   const start = cell.angle + Math.PI + gap;
   const end = cell.angle + Math.PI - gap + Math.PI * 2;
   const [sx, sy] = [
@@ -212,9 +221,39 @@ function seedNumber(seed: string): number {
   return value;
 }
 
+/**
+ * Follow camera for phones. The whole floor squeezed onto a phone leaves each
+ * corridor only 9-13px wide, far thinner than a fingertip, so touch screens
+ * zoom in and keep Sora framed. Mouse screens always see the whole maze.
+ */
+/** Zoom in when a corridor would be drawn narrower than this, in CSS pixels. */
+const ZOOM_BELOW_PX = 24;
+/** Corridor width the follow camera aims for, in CSS pixels. */
+const FOLLOW_PX = 26;
+/** Never zoom in further than this multiple of the whole-maze fit. */
+const MAX_ZOOM = 4.5;
+/**
+ * Sora roams freely inside the middle of the view (this fraction of the half
+ * width/height on each side); the camera only moves once he nears the edge,
+ * so what the player is about to tap does not slide under the finger.
+ */
+const CAMERA_DEAD_ZONE = 0.45;
+/** Camera easing time constant, in seconds. */
+const CAMERA_TAU = 0.16;
+
+/** Imperative camera handle: the walk loop feeds Sora's position every frame. */
+export interface MazeCamera {
+  follow(point: { x: number; y: number }, snap?: boolean): void;
+}
+
+/** Size of the tap ripple, in CSS pixels. */
+const FINGER_RIPPLE_PX = 16;
+
+/** Longest press that still counts as a tap, shared with the walk controller. */
+export const TAP_MAX_MS = 320;
+
 interface Props {
-  level: Level;
-  playerCell: number;
+  level: Level;  playerCell: number;
   followerCell: number | null;
   friend: Character;
   player: Character;
@@ -228,18 +267,13 @@ interface Props {
   hintPath: number[];
   moving: boolean;
   showMoves: boolean;
-  /** How long one cell-to-cell glide lasts, so tokens slide instead of jumping. */
-  glideMs?: number;
   onCellTap: (cellId: number) => void;
-  /**
-   * A press anywhere on the board. `onPlayer` means the finger landed on Sora
-   * himself, which starts a grab-drag instead of a directional walk.
-   */
+  /** A press anywhere on the board: walks there at once, or becomes a thumb stick on drag. */
   onMazePointerDown?: (info: {
-    direction: { x: number; y: number } | null;
     cellId: number | null;
     point: { x: number; y: number };
-    onPlayer: boolean;
+    /** Screen scale, so a fingertip can be measured in CSS pixels. */
+    pixelsPerUnit: number;
   }) => void;
   /** Dragging while pressed works like a joystick; a null direction is the dead zone. */
   onMazePointerMove?: (info: {
@@ -247,12 +281,25 @@ interface Props {
     dragging: boolean;
     point: { x: number; y: number };
   }) => void;
-  onMazePointerRelease?: () => void;
+  /** `tap` is true for a short press without a drag, so the board can auto-walk. */
+  onMazePointerUp?: (info: {
+    tap: boolean;
+    cellId: number | null;
+    point: { x: number; y: number };
+  }) => void;
   /** Friends walking with Sora; when present it replaces the single follower. */
   party?: PartyToken[] | null;
   scoutMarks?: ScoutMark[] | null;
   scoutHighlight?: ScoutHighlight | null;
   gremlins?: GremlinToken[] | null;
+  /** Sora's token is positioned imperatively by the motion loop, not by React. */
+  playerTokenRef?: React.RefObject<SVGGElement | null>;
+  /** Filled with the follow camera; feed it Sora's position as he moves. */
+  cameraRef?: React.MutableRefObject<MazeCamera | null>;
+  /** Show the whole maze even where the follow camera would zoom in. */
+  overview?: boolean;
+  /** Told whether this screen zooms in at all, so a "whole maze" toggle can show. */
+  onZoomableChange?: (zoomable: boolean) => void;
 }
 
 export function Maze({
@@ -271,15 +318,18 @@ export function Maze({
   hintPath,
   moving,
   showMoves,
-  glideMs = 150,
   onCellTap,
   onMazePointerDown,
   onMazePointerMove,
-  onMazePointerRelease,
+  onMazePointerUp,
   party = null,
   scoutMarks = null,
   scoutHighlight = null,
   gremlins = null,
+  playerTokenRef,
+  cameraRef,
+  overview = false,
+  onZoomableChange,
 }: Props) {
   const uid = useId().replace(/[:]/g, "");
   const wobbleId = `wobble-${uid}`;
@@ -396,14 +446,37 @@ export function Maze({
 
   // ---- Press-and-drag steering -------------------------------------------------
   const joyRef = useRef<SVGGElement | null>(null);
+  const rippleRef = useRef<SVGCircleElement | null>(null);
+  const joyRingRef = useRef<SVGCircleElement | null>(null);
+  const joyKnobRef = useRef<SVGCircleElement | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<{
     origin: { x: number; y: number };
     point: { x: number; y: number };
+    /**
+     * The thumb stick lives in screen pixels: the follow camera may pan while
+     * the thumb rests, and the stick must stay put under it.
+     */
+    originClient: { x: number; y: number };
+    pointClient: { x: number; y: number };
     dragging: boolean;
     deadZone: number;
-    grabbing: boolean;
+    pixelsPerUnit: number;
+    startedAt: number;
+    cellId: number | null;
+    pointerId: number;
   } | null>(null);
-  const [grabbing, setGrabbing] = useState(false);
+  const pointerUpRef = useRef(onMazePointerUp);
+
+  /** Screen sizes, converted to maze units at paint time. */
+  const JOY_RADIUS_PX = 42;
+  const JOY_KNOB_PX = 15;
+  const JOY_TRAVEL_PX = 32;
+  const DEAD_ZONE_PX = 9;
+
+  useEffect(() => {
+    pointerUpRef.current = onMazePointerUp;
+  }, [onMazePointerUp]);
 
   const directionBetween = (from: { x: number; y: number }, to: { x: number; y: number }) => {
     const dx = to.x - from.x;
@@ -416,90 +489,289 @@ export function Maze({
   const toLevelPoint = (svg: SVGSVGElement, clientX: number, clientY: number) => {
     const ctm = svg.getScreenCTM();
     if (!ctm) return null;
-    return new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+    const point = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+    // Return a plain point: DOMPoint keeps x/y on the prototype, so spreading
+    // it later would silently produce an empty object.
+    return { x: point.x, y: point.y };
   };
 
-  /** Draw the drag ring and knob without re-rendering the maze. */
+  /** Draw the thumb ring without re-rendering a single maze node. */
   const paintJoystick = () => {
     const group = joyRef.current;
     const drag = dragRef.current;
+    const svg = svgRef.current;
     if (!group) return;
-    // A grab on Sora has no joystick ring: the character himself is the handle.
-    if (!drag || !drag.dragging || drag.grabbing) {
+    if (!drag || !svg) {
       group.setAttribute("opacity", "0");
       return;
     }
-    const dx = drag.point.x - drag.origin.x;
-    const dy = drag.point.y - drag.origin.y;
-    const length = Math.hypot(dx, dy) || 1;
-    const limit = 1.7;
-    const ratio = length > limit ? limit / length : 1;
-    group.setAttribute("transform", `translate(${drag.origin.x} ${drag.origin.y})`);
-    group.setAttribute("opacity", "1");
-    const knob = group.querySelector("[data-joystick-knob]");
-    if (knob) knob.setAttribute("transform", `translate(${dx * ratio} ${dy * ratio})`);
+    const origin = toLevelPoint(svg, drag.originClient.x, drag.originClient.y);
+    const ctm = svg.getScreenCTM();
+    const pixelsPerUnit = ctm ? Math.hypot(ctm.a, ctm.b) || 1 : 1;
+    if (!origin) return;
+    const dx = drag.pointClient.x - drag.originClient.x;
+    const dy = drag.pointClient.y - drag.originClient.y;
+    const length = Math.hypot(dx, dy);
+    const ratio = length > JOY_TRAVEL_PX ? JOY_TRAVEL_PX / length : 1;
+
+    group.setAttribute("transform", `translate(${origin.x} ${origin.y})`);
+    group.setAttribute("opacity", drag.dragging ? "0.95" : "0.55");
+    joyRingRef.current?.setAttribute("r", String(JOY_RADIUS_PX / pixelsPerUnit));
+    joyKnobRef.current?.setAttribute("r", String(JOY_KNOB_PX / pixelsPerUnit));
+    joyKnobRef.current?.setAttribute(
+      "transform",
+      `translate(${(dx * ratio) / pixelsPerUnit} ${(dy * ratio) / pixelsPerUnit})`,
+    );
   };
+
+  // ---- Follow camera -------------------------------------------------------------
+  const full = useMemo(
+    () => ({ x: -(R + pad), y: -topPad, w: (R + pad) * 2, h: topPad + bottomPad }),
+    [R, pad, topPad, bottomPad],
+  );
+  const cameraState = useRef({
+    view: { ...full },
+    centre: { x: 0, y: 0 },
+    player: null as { x: number; y: number } | null,
+    raf: null as number | null,
+    last: 0,
+    zoomable: null as boolean | null,
+  });
+  const overviewRef = useRef(overview);
+  const zoomCallbackRef = useRef(onZoomableChange);
+  zoomCallbackRef.current = onZoomableChange;
+
+  /** Where the camera wants to be right now: whole maze, or a window on Sora. */
+  const cameraGoal = () => {
+    const camera = cameraState.current;
+    const svg = svgRef.current;
+    const width = svg?.clientWidth ?? 0;
+    const height = svg?.clientHeight ?? 0;
+    const coarse =
+      typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
+    const fit = width > 0 && height > 0 ? Math.min(width / full.w, height / full.h) : 0;
+    const zoomable = coarse && fit > 0 && fit < ZOOM_BELOW_PX;
+    if (camera.zoomable !== zoomable) {
+      camera.zoomable = zoomable;
+      zoomCallbackRef.current?.(zoomable);
+    }
+    if (!zoomable || overviewRef.current || !camera.player) return { ...full };
+
+    const scale = Math.min(FOLLOW_PX, fit * MAX_ZOOM);
+    const w = width / scale;
+    const h = height / scale;
+    const centre = camera.centre;
+    const player = camera.player;
+    // Dead zone: only drag the frame along once Sora nears its edge.
+    const slackX = (w / 2) * CAMERA_DEAD_ZONE;
+    const slackY = (h / 2) * CAMERA_DEAD_ZONE;
+    if (player.x > centre.x + slackX) centre.x = player.x - slackX;
+    if (player.x < centre.x - slackX) centre.x = player.x + slackX;
+    if (player.y > centre.y + slackY) centre.y = player.y - slackY;
+    if (player.y < centre.y - slackY) centre.y = player.y + slackY;
+    // Keep the frame on the paper.
+    const clampAxis = (value: number, size: number, start: number, span: number) =>
+      size >= span ? start + span / 2 : Math.max(start + size / 2, Math.min(start + span - size / 2, value));
+    centre.x = clampAxis(centre.x, w, full.x, full.w);
+    centre.y = clampAxis(centre.y, h, full.y, full.h);
+    return { x: centre.x - w / 2, y: centre.y - h / 2, w, h };
+  };
+
+  const applyView = () => {
+    const view = cameraState.current.view;
+    svgRef.current?.setAttribute(
+      "viewBox",
+      `${view.x.toFixed(4)} ${view.y.toFixed(4)} ${view.w.toFixed(4)} ${view.h.toFixed(4)}`,
+    );
+    if (dragRef.current) paintJoystick();
+  };
+
+  const stepCamera = (now: number) => {
+    const camera = cameraState.current;
+    camera.raf = null;
+    const dt = Math.min(0.05, Math.max(0.001, (now - camera.last) / 1000));
+    camera.last = now;
+    const goal = cameraGoal();
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+    const k = reduce ? 1 : 1 - Math.exp(-dt / CAMERA_TAU);
+    const view = camera.view;
+    view.x += (goal.x - view.x) * k;
+    view.y += (goal.y - view.y) * k;
+    view.w += (goal.w - view.w) * k;
+    view.h += (goal.h - view.h) * k;
+    const settled =
+      Math.abs(goal.x - view.x) + Math.abs(goal.y - view.y) +
+        Math.abs(goal.w - view.w) + Math.abs(goal.h - view.h) <
+      1e-3;
+    if (settled) Object.assign(view, goal);
+    applyView();
+    if (!settled) camera.raf = requestAnimationFrame(stepCamera);
+  };
+
+  const kickCamera = () => {
+    const camera = cameraState.current;
+    if (camera.raf !== null) return;
+    camera.last = performance.now();
+    camera.raf = requestAnimationFrame(stepCamera);
+  };
+
+  useLayoutEffect(() => {
+    if (!cameraRef) return;
+    cameraRef.current = {
+      follow(point, snap = false) {
+        const camera = cameraState.current;
+        const first = camera.player === null;
+        camera.player = { x: point.x, y: point.y };
+        if (first) camera.centre = { x: point.x, y: point.y };
+        if (snap) {
+          Object.assign(camera.view, cameraGoal());
+          applyView();
+          return;
+        }
+        kickCamera();
+      },
+    };
+    return () => {
+      cameraRef.current = null;
+    };
+  });
+
+  // A new floor starts from the whole-maze view, then eases in.
+  useLayoutEffect(() => {
+    const camera = cameraState.current;
+    camera.view = { ...full };
+    camera.player = null;
+    applyView();
+    kickCamera();
+  }, [full]);
+
+  useEffect(() => {
+    overviewRef.current = overview;
+    kickCamera();
+  }, [overview]);
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const observer = new ResizeObserver(() => kickCamera());
+    observer.observe(svg);
+    const coarse = window.matchMedia?.("(pointer: coarse)");
+    coarse?.addEventListener?.("change", kickCamera);
+    return () => {
+      observer.disconnect();
+      coarse?.removeEventListener?.("change", kickCamera);
+      const camera = cameraState.current;
+      if (camera.raf !== null) cancelAnimationFrame(camera.raf);
+      camera.raf = null;
+    };
+  }, []);
 
   const handleMazePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
+    // One thumb steers. A second finger resting on the glass is ignored.
+    if (dragRef.current) return;
+
     const svg = event.currentTarget;
     const point = toLevelPoint(svg, event.clientX, event.clientY);
     if (!point) return;
 
     const ctm = svg.getScreenCTM();
     const pixelsPerUnit = ctm ? Math.hypot(ctm.a, ctm.b) || 1 : 1;
-    // A thumb resting on the glass wobbles a few pixels; below this the press is
-    // still just a press. Small on purpose, so steering answers immediately.
-    const deadZone = 11 / pixelsPerUnit;
     const cellEl = (event.target as Element | null)?.closest?.("[data-cell-id]");
     const cellId = cellEl ? Number(cellEl.getAttribute("data-cell-id")) : null;
-    // A press inside Sora's own cell is a grab: that cell is the handle, so it
-    // stays comfortable to hit even on a small phone screen.
-    const onPlayer = cellId !== null && cellId === playerCell;
-    dragRef.current = { origin: point, point, dragging: false, deadZone, grabbing: onPlayer };
-    setGrabbing(onPlayer);
+
+    dragRef.current = {
+      origin: point,
+      point,
+      originClient: { x: event.clientX, y: event.clientY },
+      pointClient: { x: event.clientX, y: event.clientY },
+      dragging: false,
+      deadZone: DEAD_ZONE_PX,
+      pixelsPerUnit,
+      startedAt: performance.now(),
+      cellId,
+      pointerId: event.pointerId,
+    };
     paintJoystick();
+
+    // Instant feedback under the finger, restarted on every press.
+    const ripple = rippleRef.current;
+    if (ripple) {
+      ripple.setAttribute("cx", String(point.x));
+      ripple.setAttribute("cy", String(point.y));
+      ripple.setAttribute("r", String(FINGER_RIPPLE_PX / pixelsPerUnit));
+      ripple.classList.remove("is-on");
+      void ripple.getBoundingClientRect();
+      ripple.classList.add("is-on");
+    }
 
     try {
       svg.setPointerCapture(event.pointerId);
     } catch {
-      // Older browsers only: the window listener still ends the walk.
+      // Older browsers only: the window listener still ends the gesture.
     }
 
-    onMazePointerDown?.({
-      direction: playerPosition
-        ? directionBetween({ x: playerPosition.cx, y: playerPosition.cy }, point)
-        : null,
-      cellId,
-      point,
-      onPlayer,
-    });
+    onMazePointerDown?.({ cellId, point, pixelsPerUnit });
   };
 
   const handleMazePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag || drag.pointerId !== event.pointerId) return;
     const point = toLevelPoint(event.currentTarget, event.clientX, event.clientY);
     if (!point) return;
     drag.point = point;
-    const dx = point.x - drag.origin.x;
-    const dy = point.y - drag.origin.y;
+    drag.pointClient = { x: event.clientX, y: event.clientY };
+
+    const dx = drag.pointClient.x - drag.originClient.x;
+    const dy = drag.pointClient.y - drag.originClient.y;
     if (!drag.dragging && Math.hypot(dx, dy) > drag.deadZone) drag.dragging = true;
+
     paintJoystick();
     onMazePointerMove?.({
-      direction: drag.dragging ? directionBetween(drag.origin, point) : null,
+      direction: drag.dragging ? directionBetween(drag.originClient, drag.pointClient) : null,
       dragging: drag.dragging,
       point,
     });
   };
 
-  const handleMazePointerUp = () => {
-    if (!dragRef.current) return;
+  const handleMazePointerUp = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const elapsed = performance.now() - drag.startedAt;
+    const tap = event.type !== "pointercancel" && !drag.dragging && elapsed <= TAP_MAX_MS;
+    const point =
+      toLevelPoint(event.currentTarget, event.clientX, event.clientY) ?? drag.point;
+    // Taps that land on a wall or in a gap still count: snap to the nearest
+    // cell, so the player never has to hit a tiny target exactly. Taps in the
+    // padding around the maze are ignored.
+    const cellId =
+      drag.cellId ??
+      (Math.hypot(point.x, point.y) <= level.outerRadius + 0.6
+        ? nearestCellId(level, point)
+        : null);
+    drag.point = point;
     dragRef.current = null;
-    setGrabbing(false);
     paintJoystick();
-    onMazePointerRelease?.();
+    pointerUpRef.current?.({ tap, cellId, point });
   };
+
+  // If the finger leaves the board without a pointer event reaching the SVG
+  // (older Safari), still clear the thumb ring and stop the walk.
+  useEffect(() => {
+    const release = (event: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      dragRef.current = null;
+      paintJoystick();
+      pointerUpRef.current?.({ tap: false, cellId: null, point: drag.point });
+    };
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    return () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+    };
+  }, []);
 
   const portalCells = level.portals
     .map((portal) => cells[portal.externalCell])
@@ -507,6 +779,7 @@ export function Maze({
 
   return (
     <svg
+      ref={svgRef}
       className="maze-svg"
       data-moving={moving ? "true" : "false"}
       viewBox={viewBox}
@@ -765,7 +1038,7 @@ export function Maze({
           <g key={cell.id} pointerEvents="none">
             <circle cx={cell.cx} cy={cell.cy} r={CAPSULE_RADIUS} fill={PAPER} />
             <path
-              d={capsuleOutline(cell)}
+              d={capsuleOutline(cell, level.outerRadius)}
               fill="none"
               stroke={INK}
               strokeWidth="3.6"
@@ -1001,17 +1274,15 @@ export function Maze({
 
       {playerPosition ? (
         <g
+          ref={playerTokenRef}
           pointerEvents="none"
-          className={`token-glide player-token ${grabbing ? "is-grabbed" : ""}`}
+          className="player-token"
           data-player-token
           data-player-cell={playerCell}
-          style={{
-            transform: `translate(${playerPosition.cx}px, ${playerPosition.cy}px)`,
-            transitionDuration: `${glideMs}ms`,
-          }}
         >
+          {/* Sized to BODY_RADIUS (freeMove.ts): the outline touches a wall exactly when Sora does. */}
           <circle
-            r="0.44"
+            r="0.34"
             fill="none"
             stroke={player.aura}
             strokeWidth="3"
@@ -1019,16 +1290,28 @@ export function Maze({
             className="player-halo"
             vectorEffect="non-scaling-stroke"
           />
-          <ellipse cx="0" cy="0.38" rx="0.27" ry="0.08" fill="#3A2412" opacity="0.18" />
-          <circle r="0.37" fill={PAPER} stroke={INK} strokeWidth="2.4" vectorEffect="non-scaling-stroke" />
-          <g transform="scale(0.007) translate(-50 -52)">
+          <ellipse cx="0" cy="0.27" rx="0.2" ry="0.06" fill="#3A2412" opacity="0.18" />
+          <circle r="0.27" fill={PAPER} stroke={INK} strokeWidth="2.4" vectorEffect="non-scaling-stroke" />
+          <g transform="scale(0.0051) translate(-50 -52)">
             <AvatarGlyph character={player} />
           </g>
         </g>
       ) : null}
 
-      <g ref={joyRef} className="maze-joystick" pointerEvents="none" opacity="0">
+      <circle
+        ref={rippleRef}
+        className="tap-ripple"
+        r="0.5"
+        fill="none"
+        stroke={accent}
+        strokeWidth="3"
+        vectorEffect="non-scaling-stroke"
+        pointerEvents="none"
+      />
+
+      <g ref={joyRef} className="maze-joystick" data-maze-joystick pointerEvents="none" opacity="0">
         <circle
+          ref={joyRingRef}
           r="2"
           fill={PAPER}
           fillOpacity="0.35"
@@ -1038,6 +1321,7 @@ export function Maze({
           vectorEffect="non-scaling-stroke"
         />
         <circle
+          ref={joyKnobRef}
           data-joystick-knob
           r="0.72"
           fill={accent}

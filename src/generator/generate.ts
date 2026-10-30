@@ -7,7 +7,7 @@ import {
   openDegree,
   reachableCount,
 } from "./graph";
-import { buildPolarGrid, carveGrowing, carveHybrid, carveRing } from "./carve";
+import { buildPolarGrid, carveGrowing, carveHybrid, carveRing, carveTree, thetaSectorCounts } from "./carve";
 import { makeRng, pick, shuffle, type Rng } from "./rng";
 import type {
   Cell,
@@ -23,6 +23,20 @@ const TWO_PI = Math.PI * 2;
 const PORTAL_OFFSET = 0.02;
 const CAPSULE_RADIUS = 0.5;
 
+/**
+ * Half-width, in radians measured at the capsule centre, of the mouth a portal
+ * capsule opens toward the maze. The mouth ends exactly where the capsule
+ * circle crosses the head rim, so the capsule only bulges outward and never
+ * pinches the outer ring corridor. Shared by collision and rendering.
+ */
+function capsuleOpening(outerRadius: number): number {
+  const centre = outerRadius + PORTAL_OFFSET;
+  const cos =
+    (centre * centre + CAPSULE_RADIUS * CAPSULE_RADIUS - outerRadius * outerRadius) /
+    (2 * centre * CAPSULE_RADIUS);
+  return Math.acos(Math.max(-1, Math.min(1, cos)));
+}
+
 // The reference bunny ears are tall, multi-lane mini-mazes rather than two
 // simple boxes. A 5x9 grid gives each ear several nested turns while still
 // leaving room for the character tokens on a phone.
@@ -31,6 +45,8 @@ const EAR_HEIGHT = 9.6;
 const EAR_COLS = 5;
 const EAR_ROWS = 9;
 const EAR_CENTER_X = 3.8;
+/** Corner radius of the ear outline. Small enough that the corner cells keep room for Sora. */
+const EAR_CORNER = 0.5;
 
 function pointAt(radius: number, angle: number): [number, number] {
   return [Math.cos(angle) * radius, Math.sin(angle) * radius];
@@ -60,6 +76,34 @@ function roundedRectPath(
     `L ${x0.toFixed(3)} ${(y0 + r).toFixed(3)}`,
     `Q ${x0.toFixed(3)} ${y0.toFixed(3)} ${(x0 + r).toFixed(3)} ${y0.toFixed(3)}`,
     "Z",
+  ].join(" ");
+}
+
+/**
+ * Outline of a bunny ear: a rounded rectangle whose bottom edge is left open
+ * between `doorLeft` and `doorRight`, where the ear meets the head.
+ */
+function earOutlinePath(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  radius: number,
+  doorLeft: number,
+  doorRight: number,
+): string {
+  const r = Math.max(0, Math.min(radius, (x1 - x0) / 2, (y1 - y0) / 2));
+  return [
+    `M ${doorRight.toFixed(3)} ${y1.toFixed(3)}`,
+    `L ${(x1 - r).toFixed(3)} ${y1.toFixed(3)}`,
+    `Q ${x1.toFixed(3)} ${y1.toFixed(3)} ${x1.toFixed(3)} ${(y1 - r).toFixed(3)}`,
+    `L ${x1.toFixed(3)} ${(y0 + r).toFixed(3)}`,
+    `Q ${x1.toFixed(3)} ${y0.toFixed(3)} ${(x1 - r).toFixed(3)} ${y0.toFixed(3)}`,
+    `L ${(x0 + r).toFixed(3)} ${y0.toFixed(3)}`,
+    `Q ${x0.toFixed(3)} ${y0.toFixed(3)} ${x0.toFixed(3)} ${(y0 + r).toFixed(3)}`,
+    `L ${x0.toFixed(3)} ${(y1 - r).toFixed(3)}`,
+    `Q ${x0.toFixed(3)} ${y1.toFixed(3)} ${(x0 + r).toFixed(3)} ${y1.toFixed(3)}`,
+    `L ${doorLeft.toFixed(3)} ${y1.toFixed(3)}`,
   ].join(" ");
 }
 
@@ -179,7 +223,14 @@ function buildEdges(cells: Cell[], rings: number): Edge[] {
  * current region and leaves a single doorway in it.  Each wall is therefore a
  * continuous arc or radial line, and the renderer can merge it into one stroke.
  */
-function divideMaze(cells: Cell[], edges: Edge[], rings: number, sectors: number, rng: Rng): void {
+function divideMaze(
+  cells: Cell[],
+  edges: Edge[],
+  rings: number,
+  sectors: number,
+  rng: Rng,
+  horizontalBias = 0.8,
+): void {
   const tangential = new Map<string, Edge>();
   const radial = new Map<string, Edge>();
   const centerEdges: Edge[] = [];
@@ -241,7 +292,7 @@ function divideMaze(cells: Cell[], edges: Edge[], rings: number, sectors: number
     let horizontal: boolean;
     if (height <= 1) horizontal = false;
     else if (width <= 1) horizontal = true;
-    else horizontal = rng() < 0.8;
+    else horizontal = rng() < horizontalBias;
 
     if (horizontal) {
       const wallRing = r0 + Math.floor(rng() * (height - 1));
@@ -311,7 +362,11 @@ function addEars(
   const earShapes: string[] = [];
   const earInnerShapes: string[] = [];
   const headWallGaps: HeadWallGap[] = [];
-  const earBottom = -rings + 0.8;
+  // The ear sits right on the head: its inner bottom corner touches the rim.
+  // An ear that sank into the head would overlap the outer ring corridor,
+  // letting Sora cross between head and ear far from the doorway.
+  const innerX = EAR_CENTER_X - EAR_WIDTH / 2;
+  const earBottom = -Math.sqrt(rings * rings - innerX * innerX);
   const earTop = earBottom - EAR_HEIGHT;
   const cellWidth = EAR_WIDTH / EAR_COLS;
   const cellHeight = EAR_HEIGHT / EAR_ROWS;
@@ -320,7 +375,14 @@ function addEars(
     const centerX = earIndex === 0 ? -EAR_CENTER_X : EAR_CENTER_X;
     const left = centerX - EAR_WIDTH / 2;
     const right = centerX + EAR_WIDTH / 2;
-    earShapes.push(roundedRectPath(left, earTop, right, earBottom, 0.9));
+    // The doorway is the bottom cell nearest the head's centre line, where
+    // the gap between ear and rim is shortest. Mirrored for the two ears.
+    const bottomCol = earIndex === 0 ? EAR_COLS - 2 : 1;
+    const doorLeft = left + bottomCol * cellWidth;
+    const doorRight = doorLeft + cellWidth;
+    earShapes.push(
+      earOutlinePath(left, earTop, right, earBottom, EAR_CORNER, doorLeft, doorRight),
+    );
     earInnerShapes.push(
       roundedRectPath(left + 0.5, earTop + 0.48, right - 0.5, earBottom - 0.9, 0.52),
     );
@@ -400,8 +462,6 @@ function addEars(
     openEarSpiral(earCells, earEdges);
 
     // One open doorway into the head, with a matching gap in the head wall.
-    // Mirror the doorway columns so the two ears sit symmetrically.
-    const bottomCol = earIndex === 0 ? 1 : EAR_COLS - 2;
     const bottomCell = earCells[EAR_ROWS - 1][bottomCol];
     const connectorAngle = Math.atan2(bottomCell.cy, bottomCell.cx);
     const outer = nearestOuterCell(cells, rings, connectorAngle);
@@ -413,13 +473,28 @@ function addEars(
       open: true,
       wall: { type: "none" },
     });
-    headWallGaps.push({
-      a0: connectorAngle - 0.2,
-      a1: connectorAngle + 0.2,
-    });
+    // The rim gap spans exactly the doorway column, so the corridor from
+    // the head into the ear is walled on both sides.
+    const rimAngle = (x: number) => Math.atan2(-Math.sqrt(rings * rings - x * x), x);
+    const gapA = rimAngle(doorLeft);
+    const gapB = rimAngle(doorRight);
+    const gap = { a0: Math.min(gapA, gapB), a1: Math.max(gapA, gapB) };
+    headWallGaps.push(gap);
+
+    // An outer-ring spoke that ends inside the doorway would block it, so
+    // open it: both outer cells then share the doorway, in the graph too.
+    const margin = 0.3 / rings;
+    for (const edge of edges) {
+      if (edge.kind !== "tangential" || edge.wall.type !== "line") continue;
+      if (cells[edge.a].ring !== rings - 1) continue;
+      const angle = Math.atan2(edge.wall.y2, edge.wall.x2);
+      if (angleDistance(angle, (gap.a0 + gap.a1) / 2) <= (gap.a1 - gap.a0) / 2 + margin) {
+        edge.open = true;
+      }
+    }
   }
 
-  return { extraTop: EAR_HEIGHT - 0.8, headWallGaps, earShapes, earInnerShapes };
+  return { extraTop: -earTop - rings, headWallGaps, earShapes, earInnerShapes };
 }
 
 function braidMaze(cells: Cell[], edges: Edge[], braid: number, rng: Rng): number {
@@ -526,6 +601,7 @@ function addPortals(
   rings: number,
   rng: Rng,
   config: FloorConfig,
+  earGaps: HeadWallGap[] = [],
 ): {
   cells: Cell[];
   edges: Edge[];
@@ -535,7 +611,23 @@ function addPortals(
   friendCell: number;
 } {
   const outerRadius = rings;
-  const outerCells = cells.filter((cell) => cell.ring === rings - 1);
+  let outerCells = cells.filter((cell) => cell.ring === rings - 1);
+
+  if (earGaps.length > 0) {
+    // Keep portal capsules off the bunny ears. A capsule drawn over an ear
+    // sits right on top of the ear's own corridors and its round wall
+    // blocks them, so reserve the whole ear footprint on the rim.
+    const reserved = 0.45;
+    const blocked = (angle: number) =>
+      earGaps.some((gap) => {
+        const middle = (gap.a0 + gap.a1) / 2;
+        return (
+          angleDistance(angle, middle) < (gap.a1 - gap.a0) / 2 + reserved
+        );
+      });
+    const freeCells = outerCells.filter((cell) => !blocked(cell.angle));
+    if (freeCells.length >= 2) outerCells = freeCells;
+  }
 
   const centerDistances = distancesFrom(cells, edges, 0);
   let startOuter: Cell;
@@ -861,11 +953,13 @@ function validate(level: Level, config: FloorConfig): boolean {
   if (config.mission === "radar") {
     if (level.orbCell < 0 || level.radarCell < 0) return false;
     if (level.coinCells.length !== (config.coinCount ?? 3)) return false;
-    if (level.metrics.pathToOrb < config.rings * 4) return false;
-    if (bfsPath(level, level.startCell, level.radarCell).length - 1 < config.rings * 6) {
+    // Measured in cells. Theta-grid cells are about a unit long, so these
+    // are real walking distances of several head radii.
+    if (level.metrics.pathToOrb < config.rings * 3.5) return false;
+    if (bfsPath(level, level.startCell, level.radarCell).length - 1 < config.rings * 4.5) {
       return false;
     }
-    if (level.metrics.pathToFriend < config.rings * 5) return false;
+    if (level.metrics.pathToFriend < config.rings * 4) return false;
     if (level.cells[level.orbCell]?.kind === "start") return false;
     if (level.cells[level.orbCell]?.kind === "exit") return false;
     if (level.cells[level.orbCell]?.kind === "chamber") return false;
@@ -884,12 +978,10 @@ function validate(level: Level, config: FloorConfig): boolean {
   return true;
 }
 
-type CarverKind = "divide" | "ring" | "growing" | "hybrid";
+type CarverKind = "divide" | "ring" | "growing" | "hybrid" | "tree";
 const CARVERS: CarverKind[] = ["divide", "ring", "growing", "hybrid"];
 
-/** Ear cells are a rectangular hand-authored template, so bunny floors always divide. */
 function resolveCarver(config: FloorConfig, seed: string): CarverKind {
-  if (config.bunny) return "divide";
   const requested = config.generator ?? "auto";
   if (requested !== "auto") return requested;
   const roll = makeRng(`${seed}:carver`, "maze")();
@@ -898,13 +990,46 @@ function resolveCarver(config: FloorConfig, seed: string): CarverKind {
 
 /** Sector count for the growing carver: rings get wider towards the rim. */
 function growingSectorCounts(rings: number, sectors: number): number[] {
-  const inner = Math.max(6, Math.round(sectors * 0.6));
-  const outer = Math.max(inner + 4, Math.round(sectors * 1.6));
+  // Consecutive rings use counts that are exact multiples of each other, so
+  // every ring boundary aligns and each radial doorway is a full sector
+  // wide. Non-aligned counts produce hairline overlaps between cells that
+  // are narrower than Sora's body and cannot be walked at all.
+  void sectors;
+  const step = Math.max(3, Math.floor((rings - 1) / 3));
   return Array.from({ length: rings }, (_, ring) => {
     if (ring === 0) return 1;
-    const t = rings <= 2 ? 0 : (ring - 1) / (rings - 2);
-    return Math.max(6, Math.round(inner + (outer - inner) * t));
+    const doublings = Math.min(2, Math.floor((ring - 1) / step));
+    return 8 << doublings;
   });
+}
+
+/**
+ * The centre cell's doorway must fit Sora's body. On floors with many
+ * ring-1 sectors the carved door can be narrower than he is, so widen it
+ * symmetrically by trimming the flanking wall arcs at radius 1. The maze
+ * graph is untouched: only closed walls shrink.
+ */
+const CENTER_DOOR_SPAN = 0.5;
+
+function widenCenterDoor(edges: Edge[]): void {
+  const centerArcs = edges.filter((edge) => edge.kind === "radial" && edge.a === 0);
+  const near = (a: number, b: number) =>
+    Math.abs(a - b) < 1e-6 || Math.abs(a - b - TWO_PI) < 1e-6 || Math.abs(a - b + TWO_PI) < 1e-6;
+
+  for (const edge of centerArcs) {
+    if (!edge.open || edge.wall.type !== "arc") continue;
+    const span = edge.wall.a1 - edge.wall.a0;
+    if (span >= CENTER_DOOR_SPAN) continue;
+    const grow = (CENTER_DOOR_SPAN - span) / 2;
+
+    for (const other of centerArcs) {
+      if (other === edge || other.open || other.wall.type !== "arc") continue;
+      if (near(other.wall.a1, edge.wall.a0)) other.wall.a1 -= grow;
+      else if (near(other.wall.a0, edge.wall.a1)) other.wall.a0 += grow;
+    }
+    edge.wall.a0 -= grow;
+    edge.wall.a1 += grow;
+  }
 }
 
 function generateAttempt(
@@ -926,7 +1051,13 @@ function generateAttempt(
   let cells: Cell[];
   let edges: Edge[];
   let braidCount = 0;
-  if (carver === "ring") {
+  if (carver === "tree") {
+    // Theta grid of near-square cells, carved as a bushy growing tree.
+    const grid = buildPolarGrid(rings, thetaSectorCounts(rings));
+    cells = grid.cells;
+    edges = grid.edges;
+    carveTree(cells, edges, rng, config.treeBias);
+  } else if (carver === "ring") {
     // Dense concentric template: full arcs with small doors.
     const grid = buildPolarGrid(rings, Array.from({ length: rings }, () => sectors));
     cells = grid.cells;
@@ -947,9 +1078,10 @@ function generateAttempt(
   } else {
     cells = buildCells(rings, sectors);
     edges = buildEdges(cells, rings);
-    divideMaze(cells, edges, rings, sectors, rng);
+    divideMaze(cells, edges, rings, sectors, rng, config.divideBias);
     braidCount = braidMaze(cells, edges, config.braid, rng);
   }
+  widenCenterDoor(edges);
 
   let extraTop = 0;
   let headWallGaps: HeadWallGap[] = [];
@@ -965,7 +1097,7 @@ function generateAttempt(
     earInnerShapes = ears.earInnerShapes;
   }
 
-  const withPortals = addPortals(cells, edges, rings, rng, config);
+  const withPortals = addPortals(cells, edges, rings, rng, config, headWallGaps);
   const level: Level = {
     version: 1,
     seed,
@@ -1038,4 +1170,4 @@ export function openNeighborIds(level: Level, cellId: number): number[] {
     .map((entry) => entry.to);
 }
 
-export { CAPSULE_RADIUS, PORTAL_OFFSET };
+export { capsuleOpening, CAPSULE_RADIUS, EAR_CORNER, PORTAL_OFFSET };

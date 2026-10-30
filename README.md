@@ -26,7 +26,7 @@ Open <http://127.0.0.1:4173/>.
 
 ## How to play
 
-- **Drag Sora to walk.** Put a finger on Sora himself and drag; he follows your thumb along the corridor. Pressing anywhere else on the maze walks him that way, and sliding the thumb steers him round bends and forks. A quick tap is one small step, and he stops where you let go — so you still make every choice at every fork.
+- **Tap to walk, or steer with a thumb joystick.** Tap anywhere near Sora — within a short walk — and he walks to that exact spot, pixel by pixel, with no tiny cell to hit. Taps farther away are ignored, so you cannot point at the exit and be walked across the floor. For hands-on control, press and hold anywhere on the maze: a floating joystick appears under your thumb, and sliding it steers Sora directly without ever covering him.
 - **Every floor has its own mission.** Floor 1 is a rescue with a star in the center. Floor 2 asks you to collect every Dragon Coin and count them at the door. Floor 3 hides numbered carrots in a bunny-shaped maze and asks you to crack an `A = 1` code. Floors 4–7 bring back the Dragon Radar, which reveals the hidden orb.
 - **Rescue the trapped friend and complete the mission.** The sealed door has a red X until that floor's goals are finished, then turns green.
 - **Rescued friends scout for you.** Up to three friends walk behind Sora and each can check one path per floor. By default they volunteer at forks; in Settings you can switch to tap-to-send or turn it off. A true dead end gets a chalk X so you avoid it. Friends never collect items, rescue anyone, or open doors — that is still your job.
@@ -35,7 +35,6 @@ Open <http://127.0.0.1:4173/>.
 - **Hint** draws a dotted route to the next goal: friend, then the floor's collectible or orb, then the door.
 - **Read aloud** speaks the floor story and mission.
 - **Big maze** lets the puzzle fill the screen and hides the surrounding interface. Press Escape or tap Exit big maze to return.
-- **Settings → Easy walking** makes one tap follow the whole route. This is best for very small players.
 - There are no timers, ads, accounts, or losing. Progress is saved locally on the device.
 - **Every visit builds a fresh maze.** The layout is generated and validated when you enter a floor, including the first play and every replay.
 
@@ -57,7 +56,7 @@ Every floor has a base seed for its theme and ring count, plus a random run seed
 
 - React 19 + Vite + TypeScript
 - Custom SVG polar-grid maze renderer
-- Seeded generator with per-run random seeds, BFS solver, corridor-stop walking, validation
+- Seeded generator with per-run random seeds, BFS solver, arc-exact wall collision, floating thumbstick and tap-to-route movement, validation
 - `vite-plugin-pwa` service worker with offline precache
 - Original SVG character avatars and dragon art
 

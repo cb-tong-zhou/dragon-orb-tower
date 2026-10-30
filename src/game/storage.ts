@@ -8,7 +8,6 @@ import {
 export interface Settings {
   sound: boolean;
   voice: boolean;
-  easyWalk: boolean;
   friendHelp: FriendHelpMode;
 }
 
@@ -18,7 +17,6 @@ export interface SaveDataV1 {
   settings: {
     sound: boolean;
     voice: boolean;
-    easyWalk: boolean;
   };
   seenTutorial: boolean;
 }
@@ -41,7 +39,6 @@ export const STORAGE_KEY_V2 = "dragon-orb-tower-save-v2";
 const DEFAULT_SETTINGS: Settings = {
   sound: true,
   voice: false,
-  easyWalk: false,
   friendHelp: "auto",
 };
 
@@ -57,7 +54,6 @@ export const DEFAULT_SAVE: SaveDataV2 = {
 interface StoredSettings {
   sound?: unknown;
   voice?: unknown;
-  easyWalk?: unknown;
   friendHelp?: unknown;
 }
 
@@ -99,7 +95,6 @@ function migrateParsed(parsed: StoredSave): SaveDataV2 {
     settings: {
       sound: parseBoolean(parsed.settings?.sound, DEFAULT_SETTINGS.sound),
       voice: parseBoolean(parsed.settings?.voice, DEFAULT_SETTINGS.voice),
-      easyWalk: parseBoolean(parsed.settings?.easyWalk, DEFAULT_SETTINGS.easyWalk),
       friendHelp: parseFriendHelp(parsed.settings?.friendHelp),
     },
     seenTutorial: parseBoolean(parsed.seenTutorial, false),

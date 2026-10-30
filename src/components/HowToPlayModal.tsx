@@ -19,12 +19,15 @@ export function HowToPlayModal({ onClose }: Props) {
               <IconMap size={24} />
             </span>
             <div>
-              <strong>Drag Sora, or press a direction</strong>
+              <strong>Tap to walk, or steer with your thumb</strong>
               <p>
-                Put a finger on Sora and drag: he follows your thumb along the
-                corridor. You can also press anywhere else on the maze to walk
-                that way and slide to steer. A quick tap is one small step.
-                Every visit builds a fresh maze.
+                Tap anywhere near Sora — within a short walk — and he walks to
+                that exact spot, pixel by pixel, so you never have to aim at a
+                cell. Taps farther away do nothing, so you find the way
+                yourself. For hands-on control, press and hold anywhere on the
+                maze: a little joystick appears under your thumb, and sliding
+                it steers him round bends and forks. Every visit builds a fresh
+                maze.
               </p>
             </div>
           </div>
@@ -78,9 +81,8 @@ export function HowToPlayModal({ onClose }: Props) {
         <p className="howto-note">
           <IconStar size={16} />
           <span>
-            Tap <strong>Big maze</strong> above the puzzle to let it fill the screen. Grown-ups can
-            turn on <strong>Easy walking</strong> in Settings; then tapping anywhere walks the whole
-            way, which is lovely for very small players.
+            Tap <strong>Big maze</strong> above the puzzle to let it fill the screen, so there is
+            more room for your thumb. There are no timers and no losing.
           </span>
         </p>
         <div className="modal-actions">

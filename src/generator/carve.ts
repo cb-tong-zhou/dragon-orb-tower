@@ -306,3 +306,59 @@ export function carveGrowing(
   }
   repairConnectivity(cells, edges);
 }
+
+/**
+ * Sector counts for a theta maze: ring 1 has six cells and the count doubles
+ * whenever a ring's cells would grow wider than about two units. Every cell
+ * stays close to a unit square, so every doorway is at least a unit wide and
+ * the maze gets denser — more choices — towards the rim instead of turning
+ * into long empty arcs.
+ */
+export function thetaSectorCounts(rings: number): number[] {
+  const counts = [1];
+  let n = 6;
+  for (let ring = 1; ring < rings; ring++) {
+    if (ring > 1 && (TWO_PI * ring) / n > 1.9) n *= 2;
+    counts.push(n);
+  }
+  return counts;
+}
+
+/**
+ * Growing-tree carver. Each step extends either the newest open cell (long
+ * winding corridors, like a backtracker) or a random one (lots of short side
+ * branches, like Prim's). `newestBias` mixes the two: high values give calmer
+ * floors with longer corridors, low values give bushy floors where every
+ * junction is a real decision.
+ */
+export function carveTree(
+  cells: Cell[],
+  edges: Edge[],
+  rng: Rng,
+  newestBias = 0.6,
+  startCell = 0,
+): void {
+  for (const edge of edges) edge.open = false;
+  const adjacency = buildOpenAdjacency(cells.length, edges);
+  const seen = new Uint8Array(cells.length);
+  const active = [startCell];
+  seen[startCell] = 1;
+  while (active.length > 0) {
+    const index = rng() < newestBias ? active.length - 1 : Math.floor(rng() * active.length);
+    const current = active[index];
+    const candidates = adjacency[current].filter((edge) => {
+      const to = edge.a === current ? edge.b : edge.a;
+      return !seen[to];
+    });
+    if (candidates.length === 0) {
+      active.splice(index, 1);
+      continue;
+    }
+    const pick = candidates[Math.floor(rng() * candidates.length)];
+    const to = pick.a === current ? pick.b : pick.a;
+    pick.open = true;
+    seen[to] = 1;
+    active.push(to);
+  }
+  repairConnectivity(cells, edges);
+}
