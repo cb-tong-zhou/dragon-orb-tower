@@ -785,7 +785,7 @@ p {
 .toast {
   position: absolute;
   left: 50%;
-  bottom: 12px;
+  top: 12px;
   /* A message must never swallow a press aimed at the maze. */
   pointer-events: none;
   transform: translateX(-50%);

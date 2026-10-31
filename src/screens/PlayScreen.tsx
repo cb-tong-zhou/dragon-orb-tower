@@ -1214,13 +1214,13 @@ export function PlayScreen({
         />
       ) : null}
 
-      <footer className="play-footer">
+      {/* <footer className="play-footer">
         <p>{missionFooter}</p>
         <button className="read-btn" onClick={readMission}>
           <IconSpeaker size={18} />
           Read aloud
         </button>
-      </footer>
+      </footer> */}
 
       {introOpen ? (
         <div className="modal-backdrop">
